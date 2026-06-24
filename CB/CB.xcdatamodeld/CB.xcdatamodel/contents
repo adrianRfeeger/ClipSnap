@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<model type="com.apple.IDECoreDataModeler.DataModel" documentVersion="1.0" lastSavedToolsVersion="1" systemVersion="11A491" minimumToolsVersion="Automatic" sourceLanguage="Swift" usedWithCloudKit="true" userDefinedModelVersionIdentifier="">
+    <entity name="ClipboardItem" representedClassName="ClipboardItem" syncable="YES" codeGenerationType="class">
+        <attribute name="byteCount" optional="YES" attributeType="Integer 64" defaultValueString="0" usesScalarValueType="YES"/>
+        <attribute name="contentHash" optional="YES" attributeType="String"/>
+        <attribute name="createdAt" optional="YES" attributeType="Date" usesScalarValueType="NO"/>
+        <attribute name="id" optional="YES" attributeType="UUID" usesScalarValueType="NO"/>
+        <attribute name="imageData" optional="YES" attributeType="Binary"/>
+        <attribute name="isFavorite" optional="YES" attributeType="Boolean" defaultValueString="NO" usesScalarValueType="YES"/>
+        <attribute name="isPinned" optional="YES" attributeType="Boolean" defaultValueString="NO" usesScalarValueType="YES"/>
+        <attribute name="plainText" optional="YES" attributeType="String"/>
+        <attribute name="previewText" optional="YES" attributeType="String"/>
+        <attribute name="rawData" optional="YES" attributeType="Binary"/>
+        <attribute name="sourceApp" optional="YES" attributeType="String"/>
+        <attribute name="sourceBundleIdentifier" optional="YES" attributeType="String"/>
+        <attribute name="thumbnailData" optional="YES" attributeType="Binary"/>
+        <attribute name="type" optional="YES" attributeType="String"/>
+        <attribute name="updatedAt" optional="YES" attributeType="Date" usesScalarValueType="NO"/>
+        <attribute name="utiType" optional="YES" attributeType="String"/>
+        <relationship name="representations" optional="YES" toMany="YES" deletionRule="Cascade" destinationEntity="ClipboardRepresentation" inverseName="item" inverseEntity="ClipboardRepresentation"/>
+    </entity>
+    <entity name="ClipboardRepresentation" representedClassName="ClipboardRepresentation" syncable="YES" codeGenerationType="class">
+        <attribute name="byteCount" optional="YES" attributeType="Integer 64" defaultValueString="0" usesScalarValueType="YES"/>
+        <attribute name="data" optional="YES" attributeType="Binary"/>
+        <attribute name="id" optional="YES" attributeType="UUID" usesScalarValueType="NO"/>
+        <attribute name="itemIndex" optional="YES" attributeType="Integer 16" defaultValueString="0" usesScalarValueType="YES"/>
+        <attribute name="order" optional="YES" attributeType="Integer 16" defaultValueString="0" usesScalarValueType="YES"/>
+        <attribute name="stringValue" optional="YES" attributeType="String"/>
+        <attribute name="utiIdentifier" optional="YES" attributeType="String"/>
+        <relationship name="item" optional="YES" maxCount="1" deletionRule="Nullify" destinationEntity="ClipboardItem" inverseName="representations" inverseEntity="ClipboardItem"/>
+    </entity>
+    <elements>
+        <element name="ClipboardItem" positionX="-63" positionY="-18" width="128" height="254"/>
+        <element name="ClipboardRepresentation" positionX="162" positionY="-18" width="128" height="164"/>
+    </elements>
+</model>
