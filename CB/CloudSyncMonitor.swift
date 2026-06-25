@@ -50,12 +50,62 @@ enum CloudSyncState: Equatable {
     }
 }
 
+struct CloudSyncEventSummary: Identifiable, Equatable {
+    let id: UUID
+    let type: String
+    let startDate: Date
+    let endDate: Date
+    let succeeded: Bool
+    let errorDescription: String?
+}
+
+enum ClipboardItemSyncState: Equatable {
+    case localOnly
+    case pending
+    case synced(Date)
+    case unavailable
+    case error(String)
+
+    var title: String {
+        switch self {
+        case .localOnly:
+            return "On This Mac"
+        case .pending:
+            return "Pending Upload"
+        case .synced:
+            return "Synced"
+        case .unavailable:
+            return "iCloud Unavailable"
+        case .error:
+            return "Sync Error"
+        }
+    }
+
+    var systemImageName: String {
+        switch self {
+        case .localOnly:
+            return "macbook"
+        case .pending:
+            return "arrow.up.icloud"
+        case .synced:
+            return "checkmark.icloud"
+        case .unavailable:
+            return "icloud.slash"
+        case .error:
+            return "exclamationmark.icloud"
+        }
+    }
+}
+
 @MainActor
 final class CloudSyncMonitor: ObservableObject {
     @Published private(set) var state: CloudSyncState = .checkingAccount
     @Published private(set) var lastSuccessfulSync: Date?
     @Published private(set) var lastErrorDescription: String?
     @Published private(set) var containerIdentifiers: [String] = []
+    @Published private(set) var lastSuccessfulExport: Date?
+    @Published private(set) var lastSuccessfulImport: Date?
+    @Published private(set) var recentEvents: [CloudSyncEventSummary] = []
 
     private let container: NSPersistentCloudKitContainer
     private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "CB", category: "CloudSync")
@@ -129,6 +179,28 @@ final class CloudSyncMonitor: ObservableObject {
         }
     }
 
+    func syncState(for item: ClipboardItem) -> ClipboardItemSyncState {
+        if item.isLocalOnly || item.isSensitive {
+            return .localOnly
+        }
+        switch state {
+        case .error(let description):
+            return .error(description)
+        case .configurationRequired, .noAccount, .restricted, .temporarilyUnavailable:
+            return .unavailable
+        case .checkingAccount, .syncing:
+            return .pending
+        case .ready:
+            guard let lastSuccessfulExport else {
+                return .pending
+            }
+            if let updatedAt = item.updatedAt, updatedAt > lastSuccessfulExport {
+                return .pending
+            }
+            return .synced(lastSuccessfulExport)
+        }
+    }
+
     private func handle(_ notification: Notification) {
         guard let event = notification.userInfo?[
             NSPersistentCloudKitContainer.eventNotificationUserInfoKey
@@ -143,6 +215,11 @@ final class CloudSyncMonitor: ObservableObject {
 
         if event.succeeded {
             lastSuccessfulSync = event.endDate
+            if event.type == .export {
+                lastSuccessfulExport = event.endDate
+            } else if event.type == .import {
+                lastSuccessfulImport = event.endDate
+            }
             lastErrorDescription = nil
             state = .ready
             logger.info("CloudKit \(self.operationTitle(for: event.type), privacy: .public) completed")
@@ -152,6 +229,24 @@ final class CloudSyncMonitor: ObservableObject {
             state = .error(description)
             logger.error("CloudKit event failed: \(description, privacy: .public)")
         }
+        record(event)
+    }
+
+    private func record(_ event: NSPersistentCloudKitContainer.Event) {
+        guard let endDate = event.endDate else {
+            return
+        }
+        let summary = CloudSyncEventSummary(
+            id: event.identifier,
+            type: operationTitle(for: event.type),
+            startDate: event.startDate,
+            endDate: endDate,
+            succeeded: event.succeeded,
+            errorDescription: event.error?.localizedDescription
+        )
+        recentEvents.removeAll { $0.id == summary.id }
+        recentEvents.insert(summary, at: 0)
+        recentEvents = Array(recentEvents.prefix(12))
     }
 
     private func operationTitle(for type: NSPersistentCloudKitContainer.EventType) -> String {

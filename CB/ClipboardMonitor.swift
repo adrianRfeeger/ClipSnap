@@ -7,6 +7,7 @@ import UniformTypeIdentifiers
 @MainActor
 final class ClipboardMonitor: ObservableObject {
     @Published private(set) var isMonitoring = false
+    @Published private(set) var pausedUntil: Date?
 
     private let context: NSManagedObjectContext
     private let cleanupService = HistoryCleanupService()
@@ -14,6 +15,7 @@ final class ClipboardMonitor: ObservableObject {
     private var monitoringTask: Task<Void, Never>?
     private var lastChangeCount: Int
     private var isRestoring = false
+    private var resumeTask: Task<Void, Never>?
 
     init(context: NSManagedObjectContext) {
         self.context = context
@@ -22,6 +24,7 @@ final class ClipboardMonitor: ObservableObject {
 
     deinit {
         monitoringTask?.cancel()
+        resumeTask?.cancel()
     }
 
     func start() {
@@ -30,6 +33,9 @@ final class ClipboardMonitor: ObservableObject {
         }
 
         lastChangeCount = NSPasteboard.general.changeCount
+        pausedUntil = nil
+        resumeTask?.cancel()
+        resumeTask = nil
         isMonitoring = true
         monitoringTask = Task { [weak self] in
             while !Task.isCancelled {
@@ -41,6 +47,7 @@ final class ClipboardMonitor: ObservableObject {
             }
         }
         cleanupService.clean(context: context, settings: ClipboardSettings.load())
+        ClipboardSpotlightIndexer.shared.rebuild(context: context)
         logger.info("Clipboard monitoring started")
     }
 
@@ -49,6 +56,20 @@ final class ClipboardMonitor: ObservableObject {
         monitoringTask = nil
         isMonitoring = false
         logger.info("Clipboard monitoring stopped")
+    }
+
+    func pause(for seconds: TimeInterval) {
+        stop()
+        pausedUntil = Date().addingTimeInterval(seconds)
+        resumeTask?.cancel()
+        resumeTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(seconds))
+            guard !Task.isCancelled else {
+                return
+            }
+            self?.start()
+        }
+        logger.info("Clipboard monitoring paused temporarily")
     }
 
     func copyToClipboard(_ item: ClipboardItem) {
@@ -137,7 +158,8 @@ final class ClipboardMonitor: ObservableObject {
             sourceApp: "Screen Capture",
             sourceBundleIdentifier: Bundle.main.bundleIdentifier
         )
-        item.updateContentIdentity()
+        applyAutomation(to: item)
+        item.isSensitive = false
 
         let settings = ClipboardSettings.load()
         do {
@@ -151,6 +173,7 @@ final class ClipboardMonitor: ObservableObject {
                     duplicate.sourceBundleIdentifier = Bundle.main.bundleIdentifier
                 }
                 try context.save()
+                ClipboardSpotlightIndexer.shared.indexItem(duplicate)
                 if copyToPasteboard {
                     copyToClipboard(duplicate)
                 }
@@ -158,6 +181,7 @@ final class ClipboardMonitor: ObservableObject {
             }
 
             try context.save()
+            ClipboardSpotlightIndexer.shared.indexItem(item)
             cleanupService.clean(context: context, settings: settings)
             if copyToPasteboard {
                 copyToClipboard(item)
@@ -172,7 +196,11 @@ final class ClipboardMonitor: ObservableObject {
     }
 
     @discardableResult
-    func importRecognizedText(_ text: String, copyToPasteboard: Bool) -> String? {
+    func importRecognizedText(
+        _ text: String,
+        sourceItemIdentifier: String? = nil,
+        copyToPasteboard: Bool
+    ) -> String? {
         let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedText.isEmpty else {
             return nil
@@ -188,12 +216,19 @@ final class ClipboardMonitor: ObservableObject {
             sourceApp: "Screen OCR",
             sourceBundleIdentifier: Bundle.main.bundleIdentifier
         )
-        item.updateContentIdentity()
+        applyAutomation(to: item)
+        item.isSensitive = ClipboardPrivacyPolicy.isSensitive(trimmedText)
+        if item.isSensitive {
+            PersistenceStoreRouting.assign(item, localOnly: true, in: context)
+        }
+        item.relatedItemIdentifier = sourceItemIdentifier
 
         let settings = ClipboardSettings.load()
         do {
             if let duplicate = findDuplicate(of: item) {
                 context.delete(item)
+                duplicate.relatedItemIdentifier = sourceItemIdentifier
+                updateRecognizedText(trimmedText, onSourceItemWith: sourceItemIdentifier)
                 if settings.moveDuplicatesToTop {
                     let now = Date()
                     duplicate.createdAt = now
@@ -202,13 +237,16 @@ final class ClipboardMonitor: ObservableObject {
                     duplicate.sourceBundleIdentifier = Bundle.main.bundleIdentifier
                 }
                 try context.save()
+                ClipboardSpotlightIndexer.shared.indexItem(duplicate)
                 if copyToPasteboard {
                     copyToClipboard(duplicate)
                 }
                 return duplicate.id?.uuidString
             }
 
+            updateRecognizedText(trimmedText, onSourceItemWith: sourceItemIdentifier)
             try context.save()
+            ClipboardSpotlightIndexer.shared.indexItem(item)
             cleanupService.clean(context: context, settings: settings)
             if copyToPasteboard {
                 copyToClipboard(item)
@@ -220,6 +258,21 @@ final class ClipboardMonitor: ObservableObject {
             logger.error("Failed to save OCR text: \(error.localizedDescription, privacy: .public)")
             return nil
         }
+    }
+
+    private func updateRecognizedText(_ text: String, onSourceItemWith identifier: String?) {
+        guard let identifier,
+              let uuid = UUID(uuidString: identifier) else {
+            return
+        }
+        let request = ClipboardItem.fetchRequest()
+        request.fetchLimit = 1
+        request.predicate = NSPredicate(format: "id == %@", uuid as CVarArg)
+        guard let sourceItem = try? context.fetch(request).first else {
+            return
+        }
+        sourceItem.recognizedText = text
+        sourceItem.updatedAt = Date()
     }
 
     func importDroppedRepresentations(_ representations: [DroppedClipboardRepresentation]) {
@@ -296,19 +349,27 @@ final class ClipboardMonitor: ObservableObject {
         captureRepresentations(from: pasteboard, for: capturedItem)
         capturedItem.sourceApp = sourceApp
         capturedItem.sourceBundleIdentifier = sourceBundleIdentifier
+        applyAutomation(to: capturedItem)
         let capturedType = capturedItem.type ?? ClipboardItemType.unknown
         let capturedByteCount = capturedItem.byteCount
+        capturedItem.isSensitive = ClipboardPrivacyPolicy.isSensitive(capturedItem.plainText)
 
         if settings.detectSensitiveContent,
-           ClipboardPrivacyPolicy.isSensitive(capturedItem.plainText) {
+           capturedItem.isSensitive {
             context.delete(capturedItem)
             logger.info("Skipped clipboard content because a privacy rule matched")
             return
         }
 
+        if capturedItem.isSensitive {
+            PersistenceStoreRouting.assign(capturedItem, localOnly: true, in: context)
+        }
+
         do {
+            var itemToIndex = capturedItem
             if let duplicate = findDuplicate(of: capturedItem) {
                 context.delete(capturedItem)
+                itemToIndex = duplicate
                 if settings.moveDuplicatesToTop {
                     let now = Date()
                     duplicate.createdAt = now
@@ -318,6 +379,7 @@ final class ClipboardMonitor: ObservableObject {
                 }
             }
             try context.save()
+            ClipboardSpotlightIndexer.shared.indexItem(itemToIndex)
             cleanupService.clean(context: context, settings: settings)
             logger.info(
                 "Processed clipboard item type \(capturedType, privacy: .public), bytes \(capturedByteCount, privacy: .public)"
@@ -433,6 +495,17 @@ final class ClipboardMonitor: ObservableObject {
         }
 
         return nil
+    }
+
+    private func applyAutomation(to item: ClipboardItem) {
+        let result = ClipboardAutomation.apply(
+            to: item,
+            settings: ClipboardAutomationSettings.load()
+        )
+        if result.contentChanged {
+            item.sortedRepresentations.forEach(context.delete)
+        }
+        item.updateContentIdentity()
     }
 
     private func captureTypedData(from pasteboard: NSPasteboard) -> ClipboardItem? {

@@ -45,10 +45,35 @@ struct PersistenceController {
         container = NSPersistentCloudKitContainer(name: "CB")
         if inMemory {
             container.persistentStoreDescriptions.first!.url = URL(fileURLWithPath: "/dev/null")
+        } else if let cloudDescription = container.persistentStoreDescriptions.first,
+                  let cloudURL = cloudDescription.url {
+            let localURL = cloudURL
+                .deletingLastPathComponent()
+                .appendingPathComponent(PersistenceStoreRouting.localStoreFilename)
+            let localDescription = NSPersistentStoreDescription(url: localURL)
+            localDescription.setOption(
+                true as NSNumber,
+                forKey: NSPersistentHistoryTrackingKey
+            )
+            localDescription.setOption(
+                true as NSNumber,
+                forKey: NSPersistentStoreRemoteChangeNotificationPostOptionKey
+            )
+            localDescription.setOption(
+                true as NSNumber,
+                forKey: NSMigratePersistentStoresAutomaticallyOption
+            )
+            localDescription.setOption(
+                true as NSNumber,
+                forKey: NSInferMappingModelAutomaticallyOption
+            )
+            container.persistentStoreDescriptions.append(localDescription)
         }
 
         container.persistentStoreDescriptions.first?.setOption(true as NSNumber, forKey: NSPersistentHistoryTrackingKey)
         container.persistentStoreDescriptions.first?.setOption(true as NSNumber, forKey: NSPersistentStoreRemoteChangeNotificationPostOptionKey)
+        container.persistentStoreDescriptions.first?.setOption(true as NSNumber, forKey: NSMigratePersistentStoresAutomaticallyOption)
+        container.persistentStoreDescriptions.first?.setOption(true as NSNumber, forKey: NSInferMappingModelAutomaticallyOption)
 
         container.loadPersistentStores(completionHandler: { (storeDescription, error) in
             if let error = error as NSError? {

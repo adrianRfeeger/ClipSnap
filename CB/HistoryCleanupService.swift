@@ -18,10 +18,12 @@ struct HistoryCleanupService {
 
                 return ClipboardRetentionItem(
                     id: id,
+                    type: item.type ?? ClipboardItemType.unknown,
                     createdAt: item.createdAt ?? .distantPast,
                     byteCount: item.byteCount,
                     isPinned: item.isPinned,
-                    isFavorite: item.isFavorite
+                    isFavorite: item.isFavorite,
+                    isSensitive: item.isSensitive
                 )
             }
             let identifiers = ClipboardRetentionPolicy.identifiersToDelete(from: snapshots, settings: settings)
@@ -33,6 +35,7 @@ struct HistoryCleanupService {
                 context.delete(item)
             }
             try context.save()
+            ClipboardSpotlightIndexer.shared.deleteIdentifiers(identifiers.map(\.uuidString))
             logger.info("Removed \(identifiers.count, privacy: .public) clipboard history items")
         } catch {
             context.rollback()

@@ -25,12 +25,19 @@ enum ScreenCaptureSettingKey {
 @MainActor
 final class ScreenCaptureService: NSObject, ObservableObject {
     @Published private(set) var isCapturing = false
+    @Published private(set) var statusText: String?
     @Published private(set) var lastCapturedItemIdentifier: String?
     @Published var errorMessage: String?
+    @Published private(set) var canOpenScreenRecordingSettings = false
 
     private let clipboardMonitor: ClipboardMonitor
     private let picker = SCContentSharingPicker.shared
     private let regionSelectionController = ScreenRegionSelectionController()
+    private var captureTask: Task<Void, Never>?
+
+    var hasScreenRecordingAccess: Bool {
+        CGPreflightScreenCaptureAccess()
+    }
 
     init(clipboardMonitor: ClipboardMonitor) {
         self.clipboardMonitor = clipboardMonitor
@@ -48,11 +55,13 @@ final class ScreenCaptureService: NSObject, ObservableObject {
         }
 
         errorMessage = nil
+        canOpenScreenRecordingSettings = false
         guard CGPreflightScreenCaptureAccess() else {
             let granted = CGRequestScreenCaptureAccess()
             errorMessage = granted
                 ? "Screen Recording access was granted. Quit and reopen Clipboard Bro, then try again."
                 : "Clipboard Bro needs Screen Recording access. Enable it in System Settings > Privacy & Security > Screen Recording."
+            canOpenScreenRecordingSettings = true
             return
         }
 
@@ -77,6 +86,7 @@ final class ScreenCaptureService: NSObject, ObservableObject {
         picker.configuration = configuration
         picker.isActive = true
         isCapturing = true
+        statusText = "Choose content to capture"
         picker.present()
     }
 
@@ -95,18 +105,27 @@ final class ScreenCaptureService: NSObject, ObservableObject {
 
     private func selectRegion(for purpose: RegionCapturePurpose) {
         isCapturing = true
-        regionSelectionController.selectRegion { [weak self] rect in
+        statusText = purpose == .text ? "Select an area to recognize text" : "Select an area to capture"
+        regionSelectionController.selectRegion(
+            instruction: purpose == .text
+                ? "Drag around text to recognize • Esc cancels"
+                : "Drag to capture a region • Esc cancels"
+        ) { [weak self] rect in
             guard let self else {
                 return
             }
 
             guard let rect else {
                 self.isCapturing = false
+                self.statusText = nil
                 return
             }
 
-            Task {
+            self.captureTask = Task {
                 try? await Task.sleep(for: .milliseconds(150))
+                guard !Task.isCancelled else {
+                    return
+                }
                 await self.captureRegion(rect, for: purpose)
             }
         }
@@ -119,14 +138,23 @@ final class ScreenCaptureService: NSObject, ObservableObject {
             case .image:
                 finishCapture(image: image, sourceDescription: "Region Capture")
             case .text:
-                try await finishOCRCapture(image: image)
+                statusText = "Recognizing text…"
+                let sourceIdentifier = clipboardMonitor.importScreenCapture(
+                    image,
+                    sourceDescription: "OCR Region Capture",
+                    copyToPasteboard: false
+                )
+                try await finishOCRCapture(image: image, sourceItemIdentifier: sourceIdentifier)
             }
         } catch {
             failCapture(error)
         }
     }
 
-    private func finishOCRCapture(image: CGImage) async throws {
+    private func finishOCRCapture(
+        image: CGImage,
+        sourceItemIdentifier: String? = nil
+    ) async throws {
         var request = RecognizeTextRequest()
         request.recognitionLevel = .accurate
         request.usesLanguageCorrection = true
@@ -147,9 +175,11 @@ final class ScreenCaptureService: NSObject, ObservableObject {
             : defaults.bool(forKey: ScreenCaptureSettingKey.copiesOCRText)
         lastCapturedItemIdentifier = clipboardMonitor.importRecognizedText(
             text,
+            sourceItemIdentifier: sourceItemIdentifier,
             copyToPasteboard: shouldCopy
         )
         isCapturing = false
+        statusText = nil
     }
 
     private func capture(filter: SCContentFilter) async {
@@ -198,13 +228,64 @@ final class ScreenCaptureService: NSObject, ObservableObject {
             copyToPasteboard: UserDefaults.standard.bool(forKey: ScreenCaptureSettingKey.copiesAfterCapture)
         )
         isCapturing = false
+        statusText = nil
         picker.isActive = false
     }
 
     private func failCapture(_ error: Error) {
+        guard !(error is CancellationError) else {
+            isCapturing = false
+            statusText = nil
+            return
+        }
         errorMessage = error.localizedDescription
         isCapturing = false
+        statusText = nil
         picker.isActive = false
+    }
+
+    func cancelCapture() {
+        captureTask?.cancel()
+        captureTask = nil
+        regionSelectionController.cancel()
+        picker.isActive = false
+        isCapturing = false
+        statusText = nil
+    }
+
+    func openScreenRecordingSettings() {
+        guard let url = URL(
+            string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
+        ) else {
+            return
+        }
+        NSWorkspace.shared.open(url)
+    }
+
+    func recognizeText(in item: ClipboardItem) {
+        guard !isCapturing,
+              let imageData = item.imageData,
+              let image = NSImage(data: imageData),
+              let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+            return
+        }
+
+        isCapturing = true
+        statusText = "Recognizing text…"
+        captureTask = Task { [weak self] in
+            guard let self else {
+                return
+            }
+
+            do {
+                try await self.finishOCRCapture(
+                    image: cgImage,
+                    sourceItemIdentifier: item.id?.uuidString
+                )
+            } catch {
+                self.failCapture(error)
+            }
+        }
     }
 }
 
@@ -222,6 +303,7 @@ extension ScreenCaptureService: SCContentSharingPickerObserver {
     nonisolated func contentSharingPicker(_ picker: SCContentSharingPicker, didCancelFor stream: SCStream?) {
         Task { @MainActor [weak self] in
             self?.isCapturing = false
+            self?.statusText = nil
             picker.isActive = false
         }
     }
@@ -247,60 +329,74 @@ private enum ScreenCaptureError: LocalizedError {
     }
 }
 
-private enum RegionCapturePurpose {
+private enum RegionCapturePurpose: Equatable {
     case image
     case text
 }
 
 @MainActor
 private final class ScreenRegionSelectionController {
-    private var window: ScreenRegionSelectionWindow?
+    private var windows: [ScreenRegionSelectionWindow] = []
 
-    func selectRegion(completion: @escaping (CGRect?) -> Void) {
-        guard window == nil else {
+    func selectRegion(instruction: String, completion: @escaping (CGRect?) -> Void) {
+        guard windows.isEmpty else {
             return
         }
 
-        let desktopFrame = NSScreen.screens.map(\.frame).reduce(CGRect.null) { $0.union($1) }
-        guard !desktopFrame.isNull else {
+        let screens = NSScreen.screens
+        guard !screens.isEmpty else {
             completion(nil)
             return
         }
 
-        let window = ScreenRegionSelectionWindow(
-            contentRect: desktopFrame,
-            styleMask: .borderless,
-            backing: .buffered,
-            defer: false
-        )
-        let selectionView = ScreenRegionSelectionView(frame: CGRect(origin: .zero, size: desktopFrame.size))
-        selectionView.onCompletion = { [weak self] localRect in
-            guard let self else {
-                return
+        windows = screens.map { screen in
+            let window = ScreenRegionSelectionWindow(
+                contentRect: screen.frame,
+                styleMask: .borderless,
+                backing: .buffered,
+                defer: false
+            )
+            let selectionView = ScreenRegionSelectionView(
+                frame: CGRect(origin: .zero, size: screen.frame.size)
+            )
+            selectionView.instruction = instruction
+            selectionView.onCompletion = { [weak self] localRect in
+                guard let self else {
+                    return
+                }
+
+                let screenRect = localRect.map {
+                    CGRect(
+                        x: screen.frame.minX + $0.minX,
+                        y: screen.frame.minY + $0.minY,
+                        width: $0.width,
+                        height: $0.height
+                    )
+                }
+                self.closeWindows()
+                completion(screenRect)
             }
 
-            let screenRect = localRect.map {
-                CGRect(
-                    x: desktopFrame.minX + $0.minX,
-                    y: desktopFrame.minY + $0.minY,
-                    width: $0.width,
-                    height: $0.height
-                )
-            }
-            window.orderOut(nil)
-            self.window = nil
-            completion(screenRect)
+            window.contentView = selectionView
+            window.level = .screenSaver
+            window.backgroundColor = .clear
+            window.isOpaque = false
+            window.hasShadow = false
+            window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+            window.orderFrontRegardless()
+            return window
         }
-
-        window.contentView = selectionView
-        window.level = .screenSaver
-        window.backgroundColor = .clear
-        window.isOpaque = false
-        window.hasShadow = false
-        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        window.makeKeyAndOrderFront(nil)
+        windows.first?.makeKey()
         NSApp.activate(ignoringOtherApps: true)
-        self.window = window
+    }
+
+    func cancel() {
+        closeWindows()
+    }
+
+    private func closeWindows() {
+        windows.forEach { $0.orderOut(nil) }
+        windows.removeAll()
     }
 }
 
@@ -312,6 +408,7 @@ private final class ScreenRegionSelectionWindow: NSWindow {
 
 private final class ScreenRegionSelectionView: NSView {
     var onCompletion: ((CGRect?) -> Void)?
+    var instruction = "Drag to select • Esc cancels"
 
     private var startPoint: CGPoint?
     private var selectionRect = CGRect.zero
@@ -365,6 +462,8 @@ private final class ScreenRegionSelectionView: NSView {
         NSColor.black.withAlphaComponent(0.35).setFill()
         dimmingPath.fill()
 
+        drawInstruction()
+
         guard !selectionRect.isEmpty else {
             return
         }
@@ -373,6 +472,42 @@ private final class ScreenRegionSelectionView: NSView {
         let border = NSBezierPath(rect: selectionRect.insetBy(dx: 0.5, dy: 0.5))
         border.lineWidth = 2
         border.stroke()
+        drawDimensions()
+    }
+
+    private func drawInstruction() {
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 15, weight: .medium),
+            .foregroundColor: NSColor.white
+        ]
+        let text = instruction as NSString
+        let size = text.size(withAttributes: attributes)
+        let rect = CGRect(
+            x: bounds.midX - size.width / 2 - 12,
+            y: bounds.maxY - size.height - 36,
+            width: size.width + 24,
+            height: size.height + 12
+        )
+        NSColor.black.withAlphaComponent(0.72).setFill()
+        NSBezierPath(roundedRect: rect, xRadius: 8, yRadius: 8).fill()
+        text.draw(
+            at: CGPoint(x: rect.minX + 12, y: rect.minY + 6),
+            withAttributes: attributes
+        )
+    }
+
+    private func drawDimensions() {
+        let label = "\(Int(selectionRect.width)) × \(Int(selectionRect.height))" as NSString
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium),
+            .foregroundColor: NSColor.white
+        ]
+        let size = label.size(withAttributes: attributes)
+        let origin = CGPoint(
+            x: min(selectionRect.maxX - size.width, bounds.maxX - size.width - 12),
+            y: max(selectionRect.minY - size.height - 12, 12)
+        )
+        label.draw(at: origin, withAttributes: attributes)
     }
 }
 

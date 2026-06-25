@@ -1,10 +1,12 @@
 import SwiftUI
 import CoreData
+import UniformTypeIdentifiers
 
 struct ContentView: View {
     @Environment(\.managedObjectContext) private var viewContext
     @ObservedObject var clipboardMonitor: ClipboardMonitor
     @ObservedObject var screenCaptureService: ScreenCaptureService
+    @ObservedObject var cloudSyncMonitor: CloudSyncMonitor
 
     @FetchRequest(
         sortDescriptors: [
@@ -17,35 +19,44 @@ struct ContentView: View {
 
     @SceneStorage("selectedClipboardItemIdentifier")
     private var selectedItemIdentifier: String?
+    @State private var selectedItemIdentifiers: Set<String> = []
     @State private var searchText = ""
     @State private var selectedFilter = ClipboardFilter.all
     @State private var isDropTargeted = false
+    @State private var isEditingBatchMetadata = false
+    @State private var imageEditingItem: ClipboardItem?
 
     private var filteredItems: [ClipboardItem] {
-        items.filter { item in
+        let query = ClipboardSearchQuery(searchText)
+        return items.filter { item in
             selectedFilter.matches(item)
-                && matchesSearch(item)
+                && query.matches(item)
         }
     }
 
     private var selectedItem: ClipboardItem? {
-        guard let selectedItemIdentifier else {
+        guard selectedItemIdentifiers.count == 1,
+              let selectedItemIdentifier = selectedItemIdentifiers.first else {
             return nil
         }
 
         return items.first { $0.selectionIdentifier == selectedItemIdentifier }
     }
 
+    private var selectedItems: [ClipboardItem] {
+        items.filter { selectedItemIdentifiers.contains($0.selectionIdentifier) }
+    }
+
     var body: some View {
         NavigationSplitView {
-            List(selection: $selectedItemIdentifier) {
+            List(selection: $selectedItemIdentifiers) {
                 ForEach(filteredItems) { item in
-                    ClipboardRow(item: item)
+                    ClipboardRow(
+                        item: item,
+                        highlightedTerms: ClipboardSearchQuery(searchText).terms
+                    )
                         .contentShape(Rectangle())
                         .tag(item.selectionIdentifier)
-                        .onTapGesture {
-                            selectedItemIdentifier = item.selectionIdentifier
-                        }
                         .onDrag {
                             ClipboardDragDropSupport.itemProvider(for: item)
                         } preview: {
@@ -67,6 +78,10 @@ struct ContentView: View {
                                 toggle(\.isFavorite, on: item)
                             }
 
+                            Button(item.isArchived ? "Restore" : "Archive") {
+                                toggle(\.isArchived, on: item)
+                            }
+
                             Divider()
 
                             Button("Delete", role: .destructive) {
@@ -77,7 +92,18 @@ struct ContentView: View {
                 .onDelete(perform: deleteItems)
             }
             .navigationTitle("Clipboard")
-            .searchable(text: $searchText, placement: .sidebar)
+            .searchable(
+                text: $searchText,
+                placement: .sidebar,
+                prompt: "Search or use app:, type:, tag:, collection:"
+            )
+            .searchSuggestions {
+                Text("Screenshots").searchCompletion("type:image app:Screen Capture")
+                Text("OCR text").searchCompletion("app:Screen OCR")
+                Text("Favorites").searchCompletion("favorite:true")
+                Text("This week").searchCompletion("after:week")
+                Text("Archived").searchCompletion("archived:true")
+            }
             .toolbar {
                 ToolbarItem {
                     Menu {
@@ -106,6 +132,60 @@ struct ContentView: View {
                     .disabled(screenCaptureService.isCapturing)
                 }
 
+                if !selectedItemIdentifiers.isEmpty {
+                    ToolbarItem {
+                        Menu {
+                            Button("Edit Collection and Tags…") {
+                                isEditingBatchMetadata = true
+                            }
+
+                            if selectedItems.compactMap(\.plainText).count >= 2 {
+                                Button("Merge Text Items") {
+                                    mergeSelectedTextItems()
+                                }
+                            }
+
+                            Divider()
+
+                            Button("Favorite Selected") {
+                                updateSelectedItems { $0.isFavorite = true }
+                            }
+
+                            Button("Pin Selected") {
+                                updateSelectedItems { $0.isPinned = true }
+                            }
+
+                            Button(selectedFilter == .archived ? "Restore Selected" : "Archive Selected") {
+                                updateSelectedItems { $0.isArchived = selectedFilter != .archived }
+                            }
+
+                            if selectedItems.count == 1, let item = selectedItems.first {
+                                Button(item.isLocalOnly ? "Move to iCloud" : "Keep on This Mac") {
+                                    move(item, localOnly: !item.isLocalOnly)
+                                }
+                            }
+
+                            Divider()
+
+                            Button("Delete Selected", role: .destructive) {
+                                selectedItems.forEach(viewContext.delete)
+                                ClipboardSpotlightIndexer.shared.deleteIdentifiers(
+                                    selectedItems.compactMap { $0.id?.uuidString }
+                                )
+                                selectedItemIdentifiers.removeAll()
+                                saveContext()
+                            }
+                        } label: {
+                            Label(
+                                selectedItemIdentifiers.count == 1
+                                    ? "Item Actions"
+                                    : "\(selectedItemIdentifiers.count) Items",
+                                systemImage: "checkmark.circle"
+                            )
+                        }
+                    }
+                }
+
                 ToolbarItem {
                     Picker("Filter", selection: $selectedFilter) {
                         ForEach(ClipboardFilter.allCases) { filter in
@@ -128,6 +208,29 @@ struct ContentView: View {
                     favoriteAction: {
                         toggle(\.isFavorite, on: selectedItem)
                     },
+                    archiveAction: {
+                        toggle(\.isArchived, on: selectedItem)
+                    },
+                    localOnlyAction: {
+                        move(selectedItem, localOnly: !selectedItem.isLocalOnly)
+                    },
+                    syncState: cloudSyncMonitor.syncState(for: selectedItem),
+                    retrySyncAction: {
+                        retrySync(for: selectedItem)
+                    },
+                    saveMetadataAction: {
+                        selectedItem.updatedAt = Date()
+                        saveContext()
+                    },
+                    saveTextAction: { text in
+                        saveEditedText(text, on: selectedItem)
+                    },
+                    recognizeTextAction: {
+                        screenCaptureService.recognizeText(in: selectedItem)
+                    },
+                    editImageAction: {
+                        imageEditingItem = selectedItem
+                    },
                     deleteAction: {
                         delete(selectedItem)
                     }
@@ -135,9 +238,13 @@ struct ContentView: View {
                 .id(selectedItem.selectionIdentifier)
             } else {
                 ContentUnavailableView(
-                    "No Clipboard Item Selected",
-                    systemImage: "clipboard",
-                    description: Text("Copy text, images, URLs, files, or rich content to start collecting history.")
+                    selectedItemIdentifiers.count > 1 ? "\(selectedItemIdentifiers.count) Items Selected" : "No Clipboard Item Selected",
+                    systemImage: selectedItemIdentifiers.count > 1 ? "checkmark.circle" : "clipboard",
+                    description: Text(
+                        selectedItemIdentifiers.count > 1
+                            ? "Use the batch actions in the toolbar to organize or update these items."
+                            : "Copy text, images, URLs, files, or rich content to start collecting history."
+                    )
                 )
             }
         }
@@ -147,6 +254,17 @@ struct ContentView: View {
                     .strokeBorder(.tint, style: StrokeStyle(lineWidth: 3, dash: [8, 5]))
                     .padding(8)
                     .allowsHitTesting(false)
+            } else if screenCaptureService.isCapturing,
+                      let statusText = screenCaptureService.statusText {
+                VStack(spacing: 10) {
+                    ProgressView()
+                    Text(statusText)
+                    Button("Cancel") {
+                        screenCaptureService.cancelCapture()
+                    }
+                }
+                .padding(18)
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
             }
         }
         .onDrop(
@@ -160,6 +278,24 @@ struct ContentView: View {
         .onChange(of: screenCaptureService.lastCapturedItemIdentifier) { _, identifier in
             if let identifier {
                 selectedItemIdentifier = identifier
+                selectedItemIdentifiers = [identifier]
+            }
+        }
+        .onChange(of: selectedItemIdentifiers) { _, identifiers in
+            selectedItemIdentifier = identifiers.count == 1 ? identifiers.first : nil
+        }
+        .sheet(isPresented: $isEditingBatchMetadata) {
+            BatchMetadataEditor(items: selectedItems) {
+                saveContext()
+                isEditingBatchMetadata = false
+            }
+        }
+        .sheet(item: $imageEditingItem) { item in
+            if let image = item.image {
+                ImageClipboardEditor(image: image) { data in
+                    saveEditedImage(data, on: item)
+                    imageEditingItem = nil
+                }
             }
         }
         .alert(
@@ -173,27 +309,15 @@ struct ContentView: View {
                 }
             )
         ) {
+            if screenCaptureService.canOpenScreenRecordingSettings {
+                Button("Open System Settings") {
+                    screenCaptureService.openScreenRecordingSettings()
+                }
+            }
             Button("OK", role: .cancel) {}
         } message: {
             Text(screenCaptureService.errorMessage ?? "")
         }
-    }
-
-    private func matchesSearch(_ item: ClipboardItem) -> Bool {
-        let trimmedSearch = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedSearch.isEmpty else {
-            return true
-        }
-
-        return [
-            item.plainText,
-            item.previewText,
-            item.utiType,
-            item.sourceApp,
-            item.displayType
-        ]
-        .compactMap { $0 }
-        .contains { $0.localizedCaseInsensitiveContains(trimmedSearch) }
     }
 
     private func toggle(_ keyPath: ReferenceWritableKeyPath<ClipboardItem, Bool>, on item: ClipboardItem) {
@@ -203,12 +327,107 @@ struct ContentView: View {
     }
 
     private func delete(_ item: ClipboardItem) {
-        if selectedItemIdentifier == item.selectionIdentifier {
-            selectedItemIdentifier = nil
+        selectedItemIdentifiers.remove(item.selectionIdentifier)
+        if let identifier = item.id?.uuidString {
+            ClipboardSpotlightIndexer.shared.deleteIdentifiers([identifier])
         }
-
         viewContext.delete(item)
         saveContext()
+    }
+
+    private func updateSelectedItems(_ update: (ClipboardItem) -> Void) {
+        let now = Date()
+        selectedItems.forEach {
+            update($0)
+            $0.updatedAt = now
+        }
+        saveContext()
+    }
+
+    private func saveEditedText(_ text: String, on item: ClipboardItem) {
+        item.plainText = text
+        item.previewText = text.clipboardPreview
+        item.rawData = Data(text.utf8)
+        if item.type == ClipboardItemType.text {
+            item.utiType = UTType.utf8PlainText.identifier
+        }
+        item.updatedAt = Date()
+
+        for representation in item.sortedRepresentations {
+            viewContext.delete(representation)
+        }
+        item.updateContentIdentity()
+        saveContext()
+    }
+
+    private func saveEditedImage(_ data: Data, on item: ClipboardItem) {
+        item.imageData = data
+        item.rawData = data
+        item.thumbnailData = ClipboardImageEditing.thumbnailData(from: data, maxDimension: 220)
+        item.previewText = "Edited Image"
+        item.utiType = UTType.png.identifier
+        item.updatedAt = Date()
+
+        for representation in item.sortedRepresentations {
+            viewContext.delete(representation)
+        }
+        item.updateContentIdentity()
+        saveContext()
+    }
+
+    private func mergeSelectedTextItems() {
+        let orderedItems = selectedItems.sorted {
+            ($0.createdAt ?? .distantPast) < ($1.createdAt ?? .distantPast)
+        }
+        let mergedText = ClipboardTextMerger.merge(orderedItems.compactMap(\.plainText))
+        guard !mergedText.isEmpty else {
+            return
+        }
+
+        let mergedItem = ClipboardItem.make(
+            in: viewContext,
+            type: ClipboardItemType.text,
+            plainText: mergedText,
+            previewText: mergedText.clipboardPreview,
+            rawData: Data(mergedText.utf8),
+            utiType: UTType.utf8PlainText.identifier,
+            sourceApp: "Merged Clipboard Items",
+            sourceBundleIdentifier: Bundle.main.bundleIdentifier
+        )
+        let tags = Set(orderedItems.flatMap(\.tags))
+        mergedItem.tagsText = tags.sorted().joined(separator: ", ")
+        let collections = Set(orderedItems.compactMap(\.normalizedCollectionName))
+        if collections.count == 1 {
+            mergedItem.collectionName = collections.first
+        }
+        mergedItem.updateContentIdentity()
+        saveContext()
+        selectedItemIdentifiers = [mergedItem.selectionIdentifier]
+    }
+
+    private func move(_ item: ClipboardItem, localOnly: Bool) {
+        guard let copy = PersistenceStoreRouting.copy(
+            item,
+            localOnly: localOnly,
+            in: viewContext
+        ) else {
+            return
+        }
+        let identifier = copy.selectionIdentifier
+        viewContext.delete(item)
+        saveContext()
+        selectedItemIdentifiers = [identifier]
+    }
+
+    private func retrySync(for item: ClipboardItem) {
+        guard !item.isLocalOnly, !item.isSensitive else {
+            return
+        }
+        item.updatedAt = Date()
+        saveContext()
+        Task {
+            await cloudSyncMonitor.refreshAccountStatus()
+        }
     }
 
     private func deleteItems(offsets: IndexSet) {
@@ -216,12 +435,36 @@ struct ContentView: View {
     }
 
     private func saveContext() {
+        let changedItems = (viewContext.insertedObjects.union(viewContext.updatedObjects))
+            .compactMap { $0 as? ClipboardItem }
         do {
             try viewContext.save()
+            changedItems.forEach(ClipboardSpotlightIndexer.shared.indexItem)
         } catch {
             viewContext.rollback()
             NSLog("Failed to save clipboard changes: \(error.localizedDescription)")
         }
+    }
+}
+
+private extension String {
+    func highlighted(terms: [String]) -> AttributedString {
+        var result = AttributedString(self)
+        for term in terms where !term.isEmpty {
+            var searchStart = startIndex
+            while searchStart < endIndex,
+                  let range = range(
+                    of: term,
+                    options: [.caseInsensitive, .diacriticInsensitive],
+                    range: searchStart..<endIndex
+                  ) {
+                if let attributedRange = Range(range, in: result) {
+                    result[attributedRange].backgroundColor = .yellow.opacity(0.45)
+                }
+                searchStart = range.upperBound
+            }
+        }
+        return result
     }
 }
 
@@ -233,6 +476,7 @@ private extension ClipboardItem {
 
 private struct ClipboardRow: View {
     let item: ClipboardItem
+    let highlightedTerms: [String]
 
     var body: some View {
         HStack(spacing: 10) {
@@ -242,7 +486,10 @@ private struct ClipboardRow: View {
                 .frame(width: 22)
 
             VStack(alignment: .leading, spacing: 3) {
-                Text(item.displayTitle)
+                Text(
+                    (item.shouldProtectPreview ? "Sensitive Content" : item.displayTitle)
+                        .highlighted(terms: item.shouldProtectPreview ? [] : highlightedTerms)
+                )
                     .lineLimit(1)
 
                 HStack(spacing: 6) {
@@ -258,6 +505,15 @@ private struct ClipboardRow: View {
 
                     if item.isFavorite {
                         Image(systemName: "star.fill")
+                    }
+
+                    if item.shouldProtectPreview {
+                        Image(systemName: "eye.slash.fill")
+                    }
+
+                    if let collectionName = item.normalizedCollectionName {
+                        Text(collectionName)
+                            .lineLimit(1)
                     }
                 }
                 .font(.caption)
@@ -277,7 +533,16 @@ private struct ClipboardDetailView: View {
     let copyAction: () -> Void
     let pinAction: () -> Void
     let favoriteAction: () -> Void
+    let archiveAction: () -> Void
+    let localOnlyAction: () -> Void
+    let syncState: ClipboardItemSyncState
+    let retrySyncAction: () -> Void
+    let saveMetadataAction: () -> Void
+    let saveTextAction: (String) -> Void
+    let recognizeTextAction: () -> Void
+    let editImageAction: () -> Void
     let deleteAction: () -> Void
+    @State private var revealsSensitiveContent = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -285,8 +550,26 @@ private struct ClipboardDetailView: View {
 
             Divider()
 
-            preview
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            if item.shouldProtectPreview && !revealsSensitiveContent {
+                ContentUnavailableView {
+                    Label("Sensitive Content", systemImage: "eye.slash.fill")
+                } description: {
+                    Text("This preview is concealed to reduce accidental exposure.")
+                } actions: {
+                    Button("Reveal") {
+                        revealsSensitiveContent = true
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ClipboardItemPreview(
+                    item: item,
+                    saveTextAction: saveTextAction,
+                    recognizeTextAction: recognizeTextAction,
+                    editImageAction: editImageAction
+                )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            }
 
             metadata
         }
@@ -294,12 +577,15 @@ private struct ClipboardDetailView: View {
         .onDrag {
             ClipboardDragDropSupport.itemProvider(for: item)
         } preview: {
-            Label(item.menuTitle, systemImage: item.systemImageName)
+            Label(item.protectedMenuTitle, systemImage: item.systemImageName)
                 .padding(8)
                 .background(.regularMaterial)
                 .clipShape(RoundedRectangle(cornerRadius: 6))
         }
         .navigationTitle(item.displayType)
+        .onChange(of: item.selectionIdentifier) {
+            revealsSensitiveContent = false
+        }
         .toolbar {
             ToolbarItemGroup {
                 Button(action: copyAction) {
@@ -314,6 +600,17 @@ private struct ClipboardDetailView: View {
                     Label(item.isFavorite ? "Unfavorite" : "Favorite", systemImage: item.isFavorite ? "star.slash" : "star")
                 }
 
+                Button(action: archiveAction) {
+                    Label(item.isArchived ? "Restore" : "Archive", systemImage: item.isArchived ? "tray.and.arrow.up" : "archivebox")
+                }
+
+                Button(action: localOnlyAction) {
+                    Label(
+                        item.isLocalOnly ? "Move to iCloud" : "Keep on This Mac",
+                        systemImage: item.isLocalOnly ? "icloud.and.arrow.up" : "macbook"
+                    )
+                }
+
                 Button(role: .destructive, action: deleteAction) {
                     Label("Delete", systemImage: "trash")
                 }
@@ -322,85 +619,55 @@ private struct ClipboardDetailView: View {
     }
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(item.displayTitle)
+        VStack(alignment: .leading, spacing: 10) {
+            TextField(
+                "Custom title",
+                text: Binding(
+                    get: { item.customTitle ?? "" },
+                    set: { item.customTitle = $0.isEmpty ? nil : $0 }
+                )
+            )
                 .font(.title2)
                 .fontWeight(.semibold)
-                .lineLimit(3)
+                .textFieldStyle(.plain)
+                .onSubmit(saveMetadataAction)
+
+            TextField(
+                "Tags, separated by commas",
+                text: Binding(
+                    get: { item.tagsText ?? "" },
+                    set: { item.tagsText = $0.isEmpty ? nil : $0 }
+                )
+            )
+            .textFieldStyle(.roundedBorder)
+            .onSubmit(saveMetadataAction)
+
+            TextField(
+                "Collection",
+                text: Binding(
+                    get: { item.collectionName ?? "" },
+                    set: { item.collectionName = $0.isEmpty ? nil : $0 }
+                )
+            )
+            .textFieldStyle(.roundedBorder)
+            .onSubmit(saveMetadataAction)
+
+            TextField(
+                "Notes",
+                text: Binding(
+                    get: { item.notes ?? "" },
+                    set: { item.notes = $0.isEmpty ? nil : $0 }
+                ),
+                axis: .vertical
+            )
+            .lineLimit(2...4)
+            .textFieldStyle(.roundedBorder)
+            .onSubmit(saveMetadataAction)
 
             if let createdAt = item.createdAt {
                 Text(createdAt.formatted(date: .abbreviated, time: .standard))
                     .foregroundStyle(.secondary)
             }
-        }
-    }
-
-    @ViewBuilder
-    private var preview: some View {
-        switch item.type {
-        case ClipboardItemType.image:
-            if let image = item.image {
-                Image(nsImage: image)
-                    .resizable()
-                    .scaledToFit()
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                ContentUnavailableView("Image Unavailable", systemImage: "photo")
-            }
-        case ClipboardItemType.text,
-            ClipboardItemType.url,
-            ClipboardItemType.file,
-            ClipboardItemType.json,
-            ClipboardItemType.xml,
-            ClipboardItemType.sourceCode,
-            ClipboardItemType.tabularText,
-            ClipboardItemType.contact,
-            ClipboardItemType.color:
-            ScrollView {
-                Text(item.plainText ?? item.previewText ?? "")
-                    .font(.system(.body, design: .monospaced))
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-        case ClipboardItemType.rtf:
-            if let rawData = item.rawData {
-                RichClipboardPreview(data: rawData, documentType: .rtf)
-            } else {
-                ContentUnavailableView("Rich Text Unavailable", systemImage: "doc.richtext")
-            }
-        case ClipboardItemType.rtfd:
-            if let rawData = item.rawData {
-                RichClipboardPreview(data: rawData, documentType: .rtfd)
-            } else {
-                ContentUnavailableView("RTFD Unavailable", systemImage: "doc.richtext")
-            }
-        case ClipboardItemType.html:
-            if let rawData = item.rawData {
-                RichClipboardPreview(data: rawData, documentType: .html)
-            } else {
-                ContentUnavailableView("HTML Unavailable", systemImage: "chevron.left.forwardslash.chevron.right")
-            }
-        case ClipboardItemType.pdf:
-            if let rawData = item.rawData {
-                PDFClipboardPreview(data: rawData)
-            } else {
-                ContentUnavailableView("PDF Unavailable", systemImage: "doc.fill")
-            }
-        case ClipboardItemType.audio,
-            ClipboardItemType.video,
-            ClipboardItemType.archive,
-            ClipboardItemType.data:
-            ContentUnavailableView(
-                item.displayType,
-                systemImage: "doc",
-                description: Text(item.utiType ?? "Stored binary pasteboard data")
-            )
-        default:
-            ContentUnavailableView(
-                "No Preview",
-                systemImage: "questionmark.square",
-                description: Text(item.utiType ?? "Unknown pasteboard format")
-            )
         }
     }
 
@@ -411,6 +678,30 @@ private struct ClipboardDetailView: View {
                     .foregroundStyle(.secondary)
                 Text(item.utiType ?? "Unknown")
                     .textSelection(.enabled)
+            }
+
+            GridRow {
+                Text("Storage")
+                    .foregroundStyle(.secondary)
+                Label(
+                    item.storageLocationDescription,
+                    systemImage: item.isLocalOnly ? "macbook" : "icloud"
+                )
+            }
+
+            GridRow {
+                Text("Sync")
+                    .foregroundStyle(.secondary)
+                HStack(spacing: 6) {
+                    Label(syncState.title, systemImage: syncState.systemImageName)
+                    if case .pending = syncState {
+                        Button("Retry", action: retrySyncAction)
+                            .buttonStyle(.link)
+                    } else if case .error = syncState {
+                        Button("Retry", action: retrySyncAction)
+                            .buttonStyle(.link)
+                    }
+                }
             }
 
             if let rawData = item.rawData {
@@ -471,6 +762,25 @@ private struct ClipboardDetailView: View {
                         .textSelection(.enabled)
                 }
             }
+
+            if let recognizedText = item.recognizedText, !recognizedText.isEmpty {
+                GridRow {
+                    Text("Recognized Text")
+                        .foregroundStyle(.secondary)
+                    Text(recognizedText)
+                        .lineLimit(4)
+                        .textSelection(.enabled)
+                }
+            }
+
+            if let relatedItemIdentifier = item.relatedItemIdentifier {
+                GridRow {
+                    Text("Source Item")
+                        .foregroundStyle(.secondary)
+                    Text(relatedItemIdentifier)
+                        .textSelection(.enabled)
+                }
+            }
         }
         .font(.caption)
     }
@@ -482,8 +792,14 @@ private enum ClipboardFilter: String, CaseIterable, Identifiable {
     case images
     case files
     case urls
+    case screenshots
+    case ocr
+    case code
+    case colors
+    case documents
     case favorites
     case pinned
+    case archived
 
     var id: String {
         rawValue
@@ -501,19 +817,31 @@ private enum ClipboardFilter: String, CaseIterable, Identifiable {
             return "Files"
         case .urls:
             return "URLs"
+        case .screenshots:
+            return "Screenshots"
+        case .ocr:
+            return "OCR"
+        case .code:
+            return "Code"
+        case .colors:
+            return "Colors"
+        case .documents:
+            return "Documents"
         case .favorites:
             return "Favorites"
         case .pinned:
             return "Pinned"
+        case .archived:
+            return "Archived"
         }
     }
 
     func matches(_ item: ClipboardItem) -> Bool {
         switch self {
         case .all:
-            return true
+            return !item.isArchived
         case .text:
-            return item.type == ClipboardItemType.text
+            return !item.isArchived && (item.type == ClipboardItemType.text
                 || item.type == ClipboardItemType.rtf
                 || item.type == ClipboardItemType.html
                 || item.type == ClipboardItemType.rtfd
@@ -521,17 +849,36 @@ private enum ClipboardFilter: String, CaseIterable, Identifiable {
                 || item.type == ClipboardItemType.xml
                 || item.type == ClipboardItemType.sourceCode
                 || item.type == ClipboardItemType.tabularText
-                || item.type == ClipboardItemType.contact
+                || item.type == ClipboardItemType.contact)
         case .images:
-            return item.type == ClipboardItemType.image
+            return !item.isArchived && item.type == ClipboardItemType.image
         case .files:
-            return item.type == ClipboardItemType.file
+            return !item.isArchived && item.type == ClipboardItemType.file
         case .urls:
-            return item.type == ClipboardItemType.url
+            return !item.isArchived && item.type == ClipboardItemType.url
+        case .screenshots:
+            return !item.isArchived && item.isScreenCapture
+        case .ocr:
+            return !item.isArchived && item.isOCRCapture
+        case .code:
+            return !item.isArchived
+                && (item.type == ClipboardItemType.sourceCode
+                    || item.type == ClipboardItemType.json
+                    || item.type == ClipboardItemType.xml)
+        case .colors:
+            return !item.isArchived && item.type == ClipboardItemType.color
+        case .documents:
+            return !item.isArchived
+                && (item.type == ClipboardItemType.pdf
+                    || item.type == ClipboardItemType.rtf
+                    || item.type == ClipboardItemType.rtfd
+                    || item.type == ClipboardItemType.html)
         case .favorites:
-            return item.isFavorite
+            return !item.isArchived && item.isFavorite
         case .pinned:
-            return item.isPinned
+            return !item.isArchived && item.isPinned
+        case .archived:
+            return item.isArchived
         }
     }
 }
@@ -541,7 +888,10 @@ private struct ContentViewPreviewProvider: PreviewProvider {
         let monitor = ClipboardMonitor(context: PersistenceController.preview.container.viewContext)
         ContentView(
             clipboardMonitor: monitor,
-            screenCaptureService: ScreenCaptureService(clipboardMonitor: monitor)
+            screenCaptureService: ScreenCaptureService(clipboardMonitor: monitor),
+            cloudSyncMonitor: CloudSyncMonitor(
+                container: PersistenceController.preview.container
+            )
         )
             .environment(\.managedObjectContext, PersistenceController.preview.container.viewContext)
     }

@@ -158,10 +158,30 @@ enum ClipboardPrivacyPolicy {
 
 struct ClipboardRetentionItem: Sendable {
     let id: UUID
+    let type: String
     let createdAt: Date
     let byteCount: Int64
     let isPinned: Bool
     let isFavorite: Bool
+    let isSensitive: Bool
+
+    init(
+        id: UUID,
+        type: String = ClipboardItemType.unknown,
+        createdAt: Date,
+        byteCount: Int64,
+        isPinned: Bool,
+        isFavorite: Bool,
+        isSensitive: Bool = false
+    ) {
+        self.id = id
+        self.type = type
+        self.createdAt = createdAt
+        self.byteCount = byteCount
+        self.isPinned = isPinned
+        self.isFavorite = isFavorite
+        self.isSensitive = isSensitive
+    }
 }
 
 enum ClipboardRetentionPolicy {
@@ -177,11 +197,27 @@ enum ClipboardRetentionPolicy {
             item.isPinned || (settings.keepFavorites && item.isFavorite)
         }
 
-        if settings.retentionDays > 0,
-           let cutoff = Calendar.current.date(byAdding: .day, value: -settings.retentionDays, to: now) {
-            for item in sortedItems where item.createdAt < cutoff && !isProtected(item) {
+        if settings.sensitiveRetentionMinutes > 0 {
+            let cutoff = now.addingTimeInterval(
+                -TimeInterval(settings.sensitiveRetentionMinutes * 60)
+            )
+            for item in sortedItems where item.isSensitive && item.createdAt < cutoff {
                 identifiers.insert(item.id)
             }
+        }
+
+        for item in sortedItems where !identifiers.contains(item.id) && !isProtected(item) {
+            let retentionDays = settings.retentionDays(for: item.type)
+            guard retentionDays > 0,
+                  let cutoff = Calendar.current.date(
+                    byAdding: .day,
+                    value: -retentionDays,
+                    to: now
+                  ),
+                  item.createdAt < cutoff else {
+                continue
+            }
+            identifiers.insert(item.id)
         }
 
         var retainedCount = 0
@@ -213,4 +249,51 @@ enum ClipboardRetentionPolicy {
 
         return identifiers
     }
+}
+
+struct ClipboardStorageSummary: Equatable {
+    struct Category: Identifiable, Equatable {
+        let type: String
+        let itemCount: Int
+        let byteCount: Int64
+
+        var id: String {
+            type
+        }
+    }
+
+    let itemCount: Int
+    let sensitiveItemCount: Int
+    let byteCount: Int64
+    let categories: [Category]
+
+    static func make(from items: [ClipboardStorageItem]) -> ClipboardStorageSummary {
+        let grouped = Dictionary(grouping: items, by: \.type)
+        let categories = grouped.map { type, values in
+            Category(
+                type: type,
+                itemCount: values.count,
+                byteCount: values.reduce(0) { $0 + $1.byteCount }
+            )
+        }
+        .sorted {
+            if $0.byteCount != $1.byteCount {
+                return $0.byteCount > $1.byteCount
+            }
+            return $0.type < $1.type
+        }
+
+        return ClipboardStorageSummary(
+            itemCount: items.count,
+            sensitiveItemCount: items.filter(\.isSensitive).count,
+            byteCount: items.reduce(0) { $0 + $1.byteCount },
+            categories: categories
+        )
+    }
+}
+
+struct ClipboardStorageItem: Sendable {
+    let type: String
+    let byteCount: Int64
+    let isSensitive: Bool
 }

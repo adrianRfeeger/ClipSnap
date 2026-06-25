@@ -32,7 +32,8 @@ struct ClipboardBroApp: App {
         WindowGroup("Clipboard Bro", id: "clipboard") {
             ContentView(
                 clipboardMonitor: clipboardMonitor,
-                screenCaptureService: screenCaptureService
+                screenCaptureService: screenCaptureService,
+                cloudSyncMonitor: cloudSyncMonitor
             )
                 .environment(\.managedObjectContext, persistenceController.container.viewContext)
                 .onAppear {
@@ -81,8 +82,19 @@ struct ClipboardBroApp: App {
         }
         .menuBarExtraStyle(.menu)
 
+        UtilityWindow("Quick Clipboard", id: QuickClipboardPicker.sceneID) {
+            QuickClipboardPicker(clipboardMonitor: clipboardMonitor)
+                .environment(\.managedObjectContext, persistenceController.container.viewContext)
+        }
+        .keyboardShortcut("v", modifiers: [.command, .shift])
+        .windowResizability(.contentSize)
+        .restorationBehavior(.disabled)
+
         Settings {
-            SettingsView(cloudSyncMonitor: cloudSyncMonitor)
+            SettingsView(
+                cloudSyncMonitor: cloudSyncMonitor,
+                screenCaptureService: screenCaptureService
+            )
                 .environment(\.managedObjectContext, persistenceController.container.viewContext)
                 .onAppear {
                     cloudSyncMonitor.start()

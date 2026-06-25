@@ -69,6 +69,11 @@ extension ClipboardItem {
     }
 
     var displayTitle: String {
+        if let customTitle = customTitle?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !customTitle.isEmpty {
+            return customTitle
+        }
+
         if let previewText, !previewText.isEmpty {
             return previewText
         }
@@ -131,6 +136,42 @@ extension ClipboardItem {
 
     var menuTitle: String {
         displayTitle.truncatedForMenu
+    }
+
+    var shouldProtectPreview: Bool {
+        isSensitive
+            && ClipboardSettings.load().protectsSensitivePreviews
+    }
+
+    var protectedMenuTitle: String {
+        shouldProtectPreview ? "Sensitive Content" : menuTitle
+    }
+
+    var storageLocationDescription: String {
+        isLocalOnly ? "On This Mac" : "iCloud"
+    }
+
+    var tags: [String] {
+        (tagsText ?? "")
+            .components(separatedBy: CharacterSet(charactersIn: ",\n"))
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+    }
+
+    var normalizedCollectionName: String? {
+        guard let value = collectionName?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !value.isEmpty else {
+            return nil
+        }
+        return value
+    }
+
+    var isScreenCapture: Bool {
+        sourceApp == "Screen Capture"
+    }
+
+    var isOCRCapture: Bool {
+        sourceApp == "Screen OCR"
     }
 
     var sortedRepresentations: [ClipboardRepresentation] {

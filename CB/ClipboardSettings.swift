@@ -8,6 +8,13 @@ enum ClipboardSettingKey {
     static let detectSensitiveContent = "detectSensitiveContent"
     static let moveDuplicatesToTop = "moveDuplicatesToTop"
     static let excludedBundleIdentifiers = "excludedBundleIdentifiers"
+    static let protectsSensitivePreviews = "protectsSensitivePreviews"
+    static let sensitiveRetentionMinutes = "sensitiveRetentionMinutes"
+    static let textRetentionDays = "textRetentionDays"
+    static let imageRetentionDays = "imageRetentionDays"
+    static let fileRetentionDays = "fileRetentionDays"
+    static let mediaRetentionDays = "mediaRetentionDays"
+    static let otherRetentionDays = "otherRetentionDays"
 }
 
 struct ClipboardSettings {
@@ -18,6 +25,13 @@ struct ClipboardSettings {
     var detectSensitiveContent: Bool
     var moveDuplicatesToTop: Bool
     var excludedBundleIdentifiers: Set<String>
+    var protectsSensitivePreviews: Bool
+    var sensitiveRetentionMinutes: Int
+    var textRetentionDays: Int
+    var imageRetentionDays: Int
+    var fileRetentionDays: Int
+    var mediaRetentionDays: Int
+    var otherRetentionDays: Int
 
     static let defaults = ClipboardSettings(
         maximumItemCount: 500,
@@ -26,7 +40,14 @@ struct ClipboardSettings {
         keepFavorites: true,
         detectSensitiveContent: true,
         moveDuplicatesToTop: true,
-        excludedBundleIdentifiers: []
+        excludedBundleIdentifiers: [],
+        protectsSensitivePreviews: true,
+        sensitiveRetentionMinutes: 60,
+        textRetentionDays: -1,
+        imageRetentionDays: -1,
+        fileRetentionDays: -1,
+        mediaRetentionDays: -1,
+        otherRetentionDays: -1
     )
 
     static func load(from defaults: UserDefaults = .standard) -> ClipboardSettings {
@@ -53,6 +74,34 @@ struct ClipboardSettings {
                 ?? fallback.moveDuplicatesToTop,
             excludedBundleIdentifiers: parseBundleIdentifiers(
                 defaults.string(forKey: ClipboardSettingKey.excludedBundleIdentifiers) ?? ""
+            ),
+            protectsSensitivePreviews: defaults.object(
+                forKey: ClipboardSettingKey.protectsSensitivePreviews
+            ) as? Bool ?? fallback.protectsSensitivePreviews,
+            sensitiveRetentionMinutes: defaults.object(
+                forKey: ClipboardSettingKey.sensitiveRetentionMinutes
+            ) == nil
+                ? fallback.sensitiveRetentionMinutes
+                : max(0, defaults.integer(forKey: ClipboardSettingKey.sensitiveRetentionMinutes)),
+            textRetentionDays: retentionOverride(
+                forKey: ClipboardSettingKey.textRetentionDays,
+                defaults: defaults
+            ),
+            imageRetentionDays: retentionOverride(
+                forKey: ClipboardSettingKey.imageRetentionDays,
+                defaults: defaults
+            ),
+            fileRetentionDays: retentionOverride(
+                forKey: ClipboardSettingKey.fileRetentionDays,
+                defaults: defaults
+            ),
+            mediaRetentionDays: retentionOverride(
+                forKey: ClipboardSettingKey.mediaRetentionDays,
+                defaults: defaults
+            ),
+            otherRetentionDays: retentionOverride(
+                forKey: ClipboardSettingKey.otherRetentionDays,
+                defaults: defaults
             )
         )
     }
@@ -70,4 +119,67 @@ struct ClipboardSettings {
         value > 0 ? value : fallback
     }
 
+    private static func retentionOverride(
+        forKey key: String,
+        defaults: UserDefaults
+    ) -> Int {
+        guard defaults.object(forKey: key) != nil else {
+            return -1
+        }
+        return max(-1, defaults.integer(forKey: key))
+    }
+
+    func retentionDays(for type: String) -> Int {
+        let override: Int
+        switch ClipboardRetentionCategory(type: type) {
+        case .text:
+            override = textRetentionDays
+        case .images:
+            override = imageRetentionDays
+        case .files:
+            override = fileRetentionDays
+        case .media:
+            override = mediaRetentionDays
+        case .other:
+            override = otherRetentionDays
+        }
+        return override >= 0 ? override : retentionDays
+    }
+
+}
+
+enum ClipboardRetentionCategory: String, CaseIterable, Identifiable {
+    case text
+    case images
+    case files
+    case media
+    case other
+
+    init(type: String) {
+        switch type {
+        case ClipboardItemType.text,
+            ClipboardItemType.url,
+            ClipboardItemType.rtf,
+            ClipboardItemType.rtfd,
+            ClipboardItemType.html,
+            ClipboardItemType.json,
+            ClipboardItemType.xml,
+            ClipboardItemType.sourceCode,
+            ClipboardItemType.tabularText,
+            ClipboardItemType.contact:
+            self = .text
+        case ClipboardItemType.image, ClipboardItemType.color:
+            self = .images
+        case ClipboardItemType.file, ClipboardItemType.archive, ClipboardItemType.pdf:
+            self = .files
+        case ClipboardItemType.audio, ClipboardItemType.video:
+            self = .media
+        default:
+            self = .other
+        }
+    }
+
+    var id: String {
+        rawValue
+    }
 }

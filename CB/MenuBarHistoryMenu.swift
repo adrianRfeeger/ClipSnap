@@ -18,7 +18,7 @@ struct MenuBarHistoryMenu: View {
     private var items: FetchedResults<ClipboardItem>
 
     private var recentItems: [ClipboardItem] {
-        Array(items.prefix(12))
+        Array(items.filter { !$0.isArchived }.prefix(12))
     }
 
     var body: some View {
@@ -30,7 +30,7 @@ struct MenuBarHistoryMenu: View {
                 Button {
                     clipboardMonitor.copyToClipboard(item)
                 } label: {
-                    Label(item.menuTitle, systemImage: item.systemImageName)
+                    Label(item.protectedMenuTitle, systemImage: item.systemImageName)
                     Text(item.displayType)
                 }
                 .labelStyle(.titleAndIcon)
@@ -64,12 +64,29 @@ struct MenuBarHistoryMenu: View {
 
         Label(cloudSyncMonitor.state.title, systemImage: cloudSyncMonitor.state.systemImageName)
 
-        Button(clipboardMonitor.isMonitoring ? "Pause Monitoring" : "Resume Monitoring") {
-            if clipboardMonitor.isMonitoring {
-                clipboardMonitor.stop()
-            } else {
+        if clipboardMonitor.isMonitoring {
+            Menu("Pause Monitoring") {
+                Button("5 Minutes") {
+                    clipboardMonitor.pause(for: 5 * 60)
+                }
+                Button("15 Minutes") {
+                    clipboardMonitor.pause(for: 15 * 60)
+                }
+                Button("1 Hour") {
+                    clipboardMonitor.pause(for: 60 * 60)
+                }
+                Button("Until Resumed") {
+                    clipboardMonitor.stop()
+                }
+            }
+        } else {
+            Button("Resume Monitoring") {
                 clipboardMonitor.start()
             }
+        }
+
+        if let pausedUntil = clipboardMonitor.pausedUntil {
+            Text("Paused until \(pausedUntil.formatted(date: .omitted, time: .shortened))")
         }
 
         Button("Open Clipboard") {
