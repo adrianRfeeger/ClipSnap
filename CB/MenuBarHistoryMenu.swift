@@ -6,6 +6,7 @@ struct MenuBarHistoryMenu: View {
     @Environment(\.openWindow) private var openWindow
     @ObservedObject var clipboardMonitor: ClipboardMonitor
     @ObservedObject var cloudSyncMonitor: CloudSyncMonitor
+    @ObservedObject var screenCaptureService: ScreenCaptureService
 
     @FetchRequest(
         sortDescriptors: [
@@ -37,6 +38,25 @@ struct MenuBarHistoryMenu: View {
         }
 
         Divider()
+
+        Menu("Capture") {
+            Button("Region") {
+                screenCaptureService.capture(.region)
+            }
+
+            Button("Window") {
+                screenCaptureService.capture(.window)
+            }
+
+            Button("Application") {
+                screenCaptureService.capture(.application)
+            }
+
+            Button("Display") {
+                screenCaptureService.capture(.display)
+            }
+        }
+        .disabled(screenCaptureService.isCapturing)
 
         Label(cloudSyncMonitor.state.title, systemImage: cloudSyncMonitor.state.systemImageName)
 

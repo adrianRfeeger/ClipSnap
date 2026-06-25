@@ -6,8 +6,10 @@
 //
 
 import Foundation
+import CoreGraphics
+import CoreData
 import Testing
-@testable import CB
+@testable import Clipboard_Bro
 
 struct CBTests {
     @Test func contentHashIsStableAndContentSensitive() {
@@ -160,5 +162,55 @@ struct CBTests {
         #expect(!identifiers.contains(favoriteID))
         #expect(!identifiers.contains(recentID))
         #expect(identifiers.contains(oldestID))
+    }
+
+    @MainActor
+    @Test func screenCaptureImportStoresPNGAndDeduplicates() throws {
+        let persistence = PersistenceController(inMemory: true)
+        let context = persistence.container.viewContext
+        let monitor = ClipboardMonitor(context: context)
+        let image = try #require(makeTestImage())
+
+        let firstIdentifier = monitor.importScreenCapture(
+            image,
+            sourceDescription: "Region Capture",
+            copyToPasteboard: false
+        )
+        let secondIdentifier = monitor.importScreenCapture(
+            image,
+            sourceDescription: "Region Capture",
+            copyToPasteboard: false
+        )
+
+        let request = ClipboardItem.fetchRequest()
+        let items = try context.fetch(request)
+        let item = try #require(items.first)
+
+        #expect(firstIdentifier != nil)
+        #expect(firstIdentifier == secondIdentifier)
+        #expect(items.count == 1)
+        #expect(item.type == ClipboardItemType.image)
+        #expect(item.utiType == "public.png")
+        #expect(item.imageData?.isEmpty == false)
+        #expect(item.thumbnailData?.isEmpty == false)
+        #expect(item.sourceApp == "Screen Capture")
+    }
+
+    private func makeTestImage() -> CGImage? {
+        guard let context = CGContext(
+            data: nil,
+            width: 4,
+            height: 4,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else {
+            return nil
+        }
+
+        context.setFillColor(CGColor(red: 0.2, green: 0.4, blue: 0.8, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: 4, height: 4))
+        return context.makeImage()
     }
 }

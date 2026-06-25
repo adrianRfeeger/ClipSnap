@@ -28,6 +28,18 @@ struct SettingsView: View {
 
     @State private var isConfirmingClear = false
 
+    @AppStorage(ScreenCaptureSettingKey.showsCursor)
+    private var screenCaptureShowsCursor = false
+
+    @AppStorage(ScreenCaptureSettingKey.includesWindowShadow)
+    private var screenCaptureIncludesWindowShadow = true
+
+    @AppStorage(ScreenCaptureSettingKey.includesChildWindows)
+    private var screenCaptureIncludesChildWindows = true
+
+    @AppStorage(ScreenCaptureSettingKey.copiesAfterCapture)
+    private var screenCaptureCopiesAfterCapture = false
+
     var body: some View {
         TabView {
             Form {
@@ -81,6 +93,22 @@ struct SettingsView: View {
             .formStyle(.grouped)
             .tabItem {
                 Label("Privacy", systemImage: "hand.raised")
+            }
+
+            Form {
+                Toggle("Include pointer", isOn: $screenCaptureShowsCursor)
+                Toggle("Include window shadows", isOn: $screenCaptureIncludesWindowShadow)
+                Toggle("Include sheets and popovers", isOn: $screenCaptureIncludesChildWindows)
+                Toggle("Copy capture to clipboard", isOn: $screenCaptureCopiesAfterCapture)
+
+                Section {
+                    Text("Screen captures are stored as PNG images in clipboard history.")
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .formStyle(.grouped)
+            .tabItem {
+                Label("Capture", systemImage: "camera.viewfinder")
             }
 
             Form {

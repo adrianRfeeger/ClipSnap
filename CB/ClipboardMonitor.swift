@@ -114,6 +114,63 @@ final class ClipboardMonitor: ObservableObject {
 
     }
 
+    @discardableResult
+    func importScreenCapture(
+        _ image: CGImage,
+        sourceDescription: String,
+        copyToPasteboard: Bool
+    ) -> String? {
+        let nsImage = NSImage(cgImage: image, size: .zero)
+        guard let pngData = nsImage.pngData() else {
+            logger.error("Failed to encode screen capture as PNG")
+            return nil
+        }
+
+        let item = ClipboardItem.make(
+            in: context,
+            type: ClipboardItemType.image,
+            previewText: sourceDescription,
+            imageData: pngData,
+            thumbnailData: nsImage.thumbnailData(maxDimension: 220),
+            rawData: pngData,
+            utiType: UTType.png.identifier,
+            sourceApp: "Screen Capture",
+            sourceBundleIdentifier: Bundle.main.bundleIdentifier
+        )
+        item.updateContentIdentity()
+
+        let settings = ClipboardSettings.load()
+        do {
+            if let duplicate = findDuplicate(of: item) {
+                context.delete(item)
+                if settings.moveDuplicatesToTop {
+                    let now = Date()
+                    duplicate.createdAt = now
+                    duplicate.updatedAt = now
+                    duplicate.sourceApp = "Screen Capture"
+                    duplicate.sourceBundleIdentifier = Bundle.main.bundleIdentifier
+                }
+                try context.save()
+                if copyToPasteboard {
+                    copyToClipboard(duplicate)
+                }
+                return duplicate.id?.uuidString
+            }
+
+            try context.save()
+            cleanupService.clean(context: context, settings: settings)
+            if copyToPasteboard {
+                copyToClipboard(item)
+            }
+            logger.info("Stored screen capture, bytes \(pngData.count, privacy: .public)")
+            return item.id?.uuidString
+        } catch {
+            context.rollback()
+            logger.error("Failed to save screen capture: \(error.localizedDescription, privacy: .public)")
+            return nil
+        }
+    }
+
     func importDroppedRepresentations(_ representations: [DroppedClipboardRepresentation]) {
         guard !representations.isEmpty else {
             return

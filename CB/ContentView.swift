@@ -4,6 +4,7 @@ import CoreData
 struct ContentView: View {
     @Environment(\.managedObjectContext) private var viewContext
     @ObservedObject var clipboardMonitor: ClipboardMonitor
+    @ObservedObject var screenCaptureService: ScreenCaptureService
 
     @FetchRequest(
         sortDescriptors: [
@@ -79,6 +80,29 @@ struct ContentView: View {
             .searchable(text: $searchText, placement: .sidebar)
             .toolbar {
                 ToolbarItem {
+                    Menu {
+                        Button("Capture Region") {
+                            screenCaptureService.capture(.region)
+                        }
+
+                        Button("Capture Window") {
+                            screenCaptureService.capture(.window)
+                        }
+
+                        Button("Capture Application") {
+                            screenCaptureService.capture(.application)
+                        }
+
+                        Button("Capture Display") {
+                            screenCaptureService.capture(.display)
+                        }
+                    } label: {
+                        Label("Capture", systemImage: "camera.viewfinder")
+                    }
+                    .disabled(screenCaptureService.isCapturing)
+                }
+
+                ToolbarItem {
                     Picker("Filter", selection: $selectedFilter) {
                         ForEach(ClipboardFilter.allCases) { filter in
                             Text(filter.title).tag(filter)
@@ -128,6 +152,26 @@ struct ContentView: View {
             ClipboardDragDropSupport.loadDroppedProviders(providers) { representations in
                 clipboardMonitor.importDroppedRepresentations(representations)
             }
+        }
+        .onChange(of: screenCaptureService.lastCapturedItemIdentifier) { _, identifier in
+            if let identifier {
+                selectedItemIdentifier = identifier
+            }
+        }
+        .alert(
+            "Screen Capture",
+            isPresented: Binding(
+                get: { screenCaptureService.errorMessage != nil },
+                set: { isPresented in
+                    if !isPresented {
+                        screenCaptureService.errorMessage = nil
+                    }
+                }
+            )
+        ) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(screenCaptureService.errorMessage ?? "")
         }
     }
 
@@ -490,7 +534,11 @@ private enum ClipboardFilter: String, CaseIterable, Identifiable {
 
 private struct ContentViewPreviewProvider: PreviewProvider {
     static var previews: some View {
-        ContentView(clipboardMonitor: ClipboardMonitor(context: PersistenceController.preview.container.viewContext))
+        let monitor = ClipboardMonitor(context: PersistenceController.preview.container.viewContext)
+        ContentView(
+            clipboardMonitor: monitor,
+            screenCaptureService: ScreenCaptureService(clipboardMonitor: monitor)
+        )
             .environment(\.managedObjectContext, PersistenceController.preview.container.viewContext)
     }
 }
