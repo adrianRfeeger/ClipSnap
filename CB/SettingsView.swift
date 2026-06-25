@@ -40,6 +40,9 @@ struct SettingsView: View {
     @AppStorage(ScreenCaptureSettingKey.copiesAfterCapture)
     private var screenCaptureCopiesAfterCapture = false
 
+    @AppStorage(ScreenCaptureSettingKey.copiesOCRText)
+    private var screenCaptureCopiesOCRText = true
+
     var body: some View {
         TabView {
             Form {
@@ -100,6 +103,7 @@ struct SettingsView: View {
                 Toggle("Include window shadows", isOn: $screenCaptureIncludesWindowShadow)
                 Toggle("Include sheets and popovers", isOn: $screenCaptureIncludesChildWindows)
                 Toggle("Copy capture to clipboard", isOn: $screenCaptureCopiesAfterCapture)
+                Toggle("Copy recognized text to clipboard", isOn: $screenCaptureCopiesOCRText)
 
                 Section {
                     Text("Screen captures are stored as PNG images in clipboard history.")

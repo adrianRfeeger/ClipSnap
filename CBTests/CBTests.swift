@@ -196,6 +196,33 @@ struct CBTests {
         #expect(item.sourceApp == "Screen Capture")
     }
 
+    @MainActor
+    @Test func recognizedTextImportStoresTextAndDeduplicates() throws {
+        let persistence = PersistenceController(inMemory: true)
+        let context = persistence.container.viewContext
+        let monitor = ClipboardMonitor(context: context)
+
+        let firstIdentifier = monitor.importRecognizedText(
+            "Recognized screen text",
+            copyToPasteboard: false
+        )
+        let secondIdentifier = monitor.importRecognizedText(
+            "Recognized screen text",
+            copyToPasteboard: false
+        )
+
+        let request = ClipboardItem.fetchRequest()
+        let items = try context.fetch(request)
+        let item = try #require(items.first)
+
+        #expect(firstIdentifier == secondIdentifier)
+        #expect(items.count == 1)
+        #expect(item.type == ClipboardItemType.text)
+        #expect(item.plainText == "Recognized screen text")
+        #expect(item.utiType == "public.utf8-plain-text")
+        #expect(item.sourceApp == "Screen OCR")
+    }
+
     private func makeTestImage() -> CGImage? {
         guard let context = CGContext(
             data: nil,

@@ -40,6 +40,10 @@ struct MenuBarHistoryMenu: View {
         Divider()
 
         Menu("Capture") {
+            Button("Text from Region") {
+                screenCaptureService.capture(.ocrRegion)
+            }
+
             Button("Region") {
                 screenCaptureService.capture(.region)
             }

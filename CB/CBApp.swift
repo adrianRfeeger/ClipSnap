@@ -42,6 +42,11 @@ struct ClipboardBroApp: App {
         }
         .commands {
             CommandMenu("Capture") {
+                Button("Capture Text from Region") {
+                    screenCaptureService.capture(.ocrRegion)
+                }
+                .keyboardShortcut("6", modifiers: [.command, .shift])
+
                 Button("Capture Region") {
                     screenCaptureService.capture(.region)
                 }

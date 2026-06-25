@@ -171,6 +171,57 @@ final class ClipboardMonitor: ObservableObject {
         }
     }
 
+    @discardableResult
+    func importRecognizedText(_ text: String, copyToPasteboard: Bool) -> String? {
+        let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedText.isEmpty else {
+            return nil
+        }
+
+        let item = ClipboardItem.make(
+            in: context,
+            type: ClipboardItemType.text,
+            plainText: trimmedText,
+            previewText: trimmedText.clipboardPreview,
+            rawData: Data(trimmedText.utf8),
+            utiType: UTType.utf8PlainText.identifier,
+            sourceApp: "Screen OCR",
+            sourceBundleIdentifier: Bundle.main.bundleIdentifier
+        )
+        item.updateContentIdentity()
+
+        let settings = ClipboardSettings.load()
+        do {
+            if let duplicate = findDuplicate(of: item) {
+                context.delete(item)
+                if settings.moveDuplicatesToTop {
+                    let now = Date()
+                    duplicate.createdAt = now
+                    duplicate.updatedAt = now
+                    duplicate.sourceApp = "Screen OCR"
+                    duplicate.sourceBundleIdentifier = Bundle.main.bundleIdentifier
+                }
+                try context.save()
+                if copyToPasteboard {
+                    copyToClipboard(duplicate)
+                }
+                return duplicate.id?.uuidString
+            }
+
+            try context.save()
+            cleanupService.clean(context: context, settings: settings)
+            if copyToPasteboard {
+                copyToClipboard(item)
+            }
+            logger.info("Stored OCR text, characters \(trimmedText.count, privacy: .public)")
+            return item.id?.uuidString
+        } catch {
+            context.rollback()
+            logger.error("Failed to save OCR text: \(error.localizedDescription, privacy: .public)")
+            return nil
+        }
+    }
+
     func importDroppedRepresentations(_ representations: [DroppedClipboardRepresentation]) {
         guard !representations.isEmpty else {
             return

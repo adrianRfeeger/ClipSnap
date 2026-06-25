@@ -81,6 +81,10 @@ struct ContentView: View {
             .toolbar {
                 ToolbarItem {
                     Menu {
+                        Button("Capture Text from Region") {
+                            screenCaptureService.capture(.ocrRegion)
+                        }
+
                         Button("Capture Region") {
                             screenCaptureService.capture(.region)
                         }

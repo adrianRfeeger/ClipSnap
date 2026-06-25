@@ -4,9 +4,11 @@ import CoreGraphics
 import ScreenCaptureKit
 import SwiftUI
 import UniformTypeIdentifiers
+import Vision
 
 enum ScreenCaptureMode {
     case region
+    case ocrRegion
     case window
     case application
     case display
@@ -17,6 +19,7 @@ enum ScreenCaptureSettingKey {
     static let includesWindowShadow = "screenCaptureIncludesWindowShadow"
     static let includesChildWindows = "screenCaptureIncludesChildWindows"
     static let copiesAfterCapture = "screenCaptureCopiesAfterCapture"
+    static let copiesOCRText = "screenCaptureCopiesOCRText"
 }
 
 @MainActor
@@ -55,7 +58,9 @@ final class ScreenCaptureService: NSObject, ObservableObject {
 
         switch mode {
         case .region:
-            selectRegion()
+            selectRegion(for: .image)
+        case .ocrRegion:
+            selectRegion(for: .text)
         case .window, .application, .display:
             presentPicker(for: mode)
         }
@@ -83,12 +88,12 @@ final class ScreenCaptureService: NSObject, ObservableObject {
             return .singleApplication
         case .display:
             return .singleDisplay
-        case .region:
+        case .region, .ocrRegion:
             return []
         }
     }
 
-    private func selectRegion() {
+    private func selectRegion(for purpose: RegionCapturePurpose) {
         isCapturing = true
         regionSelectionController.selectRegion { [weak self] rect in
             guard let self else {
@@ -102,18 +107,49 @@ final class ScreenCaptureService: NSObject, ObservableObject {
 
             Task {
                 try? await Task.sleep(for: .milliseconds(150))
-                await self.captureRegion(rect)
+                await self.captureRegion(rect, for: purpose)
             }
         }
     }
 
-    private func captureRegion(_ rect: CGRect) async {
+    private func captureRegion(_ rect: CGRect, for purpose: RegionCapturePurpose) async {
         do {
             let image = try await SCScreenshotManager.captureImage(in: rect)
-            finishCapture(image: image, sourceDescription: "Region Capture")
+            switch purpose {
+            case .image:
+                finishCapture(image: image, sourceDescription: "Region Capture")
+            case .text:
+                try await finishOCRCapture(image: image)
+            }
         } catch {
             failCapture(error)
         }
+    }
+
+    private func finishOCRCapture(image: CGImage) async throws {
+        var request = RecognizeTextRequest()
+        request.recognitionLevel = .accurate
+        request.usesLanguageCorrection = true
+        request.automaticallyDetectsLanguage = true
+
+        let observations = try await request.perform(on: image)
+        let text = observations
+            .compactMap { $0.topCandidates(1).first?.string }
+            .joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else {
+            throw ScreenCaptureError.noRecognizedText
+        }
+
+        let defaults = UserDefaults.standard
+        let shouldCopy = defaults.object(forKey: ScreenCaptureSettingKey.copiesOCRText) == nil
+            ? true
+            : defaults.bool(forKey: ScreenCaptureSettingKey.copiesOCRText)
+        lastCapturedItemIdentifier = clipboardMonitor.importRecognizedText(
+            text,
+            copyToPasteboard: shouldCopy
+        )
+        isCapturing = false
     }
 
     private func capture(filter: SCContentFilter) async {
@@ -199,10 +235,21 @@ extension ScreenCaptureService: SCContentSharingPickerObserver {
 
 private enum ScreenCaptureError: LocalizedError {
     case missingImage
+    case noRecognizedText
 
     var errorDescription: String? {
-        "The screen capture completed without producing an image."
+        switch self {
+        case .missingImage:
+            return "The screen capture completed without producing an image."
+        case .noRecognizedText:
+            return "No readable text was found in the selected area."
+        }
     }
+}
+
+private enum RegionCapturePurpose {
+    case image
+    case text
 }
 
 @MainActor
