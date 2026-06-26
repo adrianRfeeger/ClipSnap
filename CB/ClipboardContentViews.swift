@@ -150,6 +150,7 @@ private struct EditableTextPreview: View {
                     Text("Edit").tag(true)
                 }
                 .pickerStyle(.segmented)
+                .labelsHidden()
                 .frame(width: 150)
 
                 if itemType == ClipboardItemType.json || itemType == ClipboardItemType.xml {
