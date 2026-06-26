@@ -62,9 +62,9 @@ enum ClipboardExportError: LocalizedError {
         case .missingPayload:
             return "The selected clipboard item has no exportable payload."
         case .unableToEncode:
-            return "Clipboard Bro could not encode the selected items."
+            return "ClipSnap could not encode the selected items."
         case .unavailableWindow:
-            return "The sharing menu requires an active Clipboard Bro window."
+            return "The sharing menu requires an active ClipSnap window."
         }
     }
 }
@@ -199,7 +199,7 @@ enum ClipboardExportService {
 
         let payload = try nativePayload(for: item)
         let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("Clipboard Bro Sharing", isDirectory: true)
+            .appendingPathComponent("ClipSnap Sharing", isDirectory: true)
         try FileManager.default.createDirectory(
             at: directory,
             withIntermediateDirectories: true

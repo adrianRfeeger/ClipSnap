@@ -12,7 +12,7 @@ final class ClipboardSpotlightIndexer {
     static let shared = ClipboardSpotlightIndexer()
 
     private let index = CSSearchableIndex.default()
-    private let domainIdentifier = "clipboard-bro.history"
+    private let domainIdentifier = "clipsnap.history"
     private let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "CB",
         category: "Spotlight"

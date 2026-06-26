@@ -11,7 +11,7 @@ import CoreGraphics
 import CoreData
 import ImageIO
 import Testing
-@testable import Clipboard_Bro
+@testable import ClipSnap
 
 struct CBTests {
     @Test func contentHashIsStableAndContentSensitive() {

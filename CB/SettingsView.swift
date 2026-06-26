@@ -227,7 +227,7 @@ struct SettingsView: View {
                             ContentUnavailableView(
                                 "No Excluded Applications",
                                 systemImage: "app.badge",
-                                description: Text("Clipboard Bro will monitor clipboard changes from every application.")
+                                description: Text("ClipSnap will monitor clipboard changes from every application.")
                             )
                             .frame(minHeight: 120)
                         } else {
@@ -258,7 +258,7 @@ struct SettingsView: View {
                         }
                     }
 
-                    Text("Add an app to prevent Clipboard Bro from saving clipboard changes made while that app is active.")
+                    Text("Add an app to prevent ClipSnap from saving clipboard changes made while that app is active.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

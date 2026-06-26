@@ -59,6 +59,12 @@ struct MenuBarHistoryMenu: View {
             Button("Display") {
                 screenCaptureService.capture(.display)
             }
+
+            Divider()
+
+            Button("Record Display") {
+                screenCaptureService.capture(.recording)
+            }
         }
         .disabled(screenCaptureService.isCapturing)
 
@@ -100,7 +106,7 @@ struct MenuBarHistoryMenu: View {
 
         Divider()
 
-        Button("Quit Clipboard Bro") {
+        Button("Quit ClipSnap") {
             NSApp.terminate(nil)
         }
     }

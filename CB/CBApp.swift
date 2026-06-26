@@ -9,7 +9,7 @@ import SwiftUI
 import CoreData
 
 @main
-struct ClipboardBroApp: App {
+struct ClipSnapApp: App {
     private let persistenceController: PersistenceController
     private let isUITesting: Bool
     @StateObject private var clipboardMonitor: ClipboardMonitor
@@ -39,7 +39,7 @@ struct ClipboardBroApp: App {
     }
 
     var body: some Scene {
-        WindowGroup("Clipboard Bro", id: "clipboard") {
+        WindowGroup("ClipSnap", id: "clipboard") {
             ContentView(
                 clipboardMonitor: clipboardMonitor,
                 screenCaptureService: screenCaptureService,
@@ -77,10 +77,16 @@ struct ClipboardBroApp: App {
                 Button("Capture Display") {
                     screenCaptureService.capture(.display)
                 }
+
+                Divider()
+
+                Button("Record Display") {
+                    screenCaptureService.capture(.recording)
+                }
             }
         }
 
-        MenuBarExtra("Clipboard Bro", systemImage: "clipboard") {
+        MenuBarExtra("ClipSnap", systemImage: "clipboard") {
             MenuBarHistoryMenu(
                 clipboardMonitor: clipboardMonitor,
                 cloudSyncMonitor: cloudSyncMonitor,

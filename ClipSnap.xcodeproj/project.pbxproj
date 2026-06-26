@@ -12,21 +12,21 @@
 			containerPortal = 07BBC15F2FEA8F6200532F95 /* Project object */;
 			proxyType = 1;
 			remoteGlobalIDString = 07BBC1662FEA8F6200532F95;
-			remoteInfo = CB;
+			remoteInfo = ClipSnap;
 		};
 		07BBC1842FEA8F6300532F95 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = 07BBC15F2FEA8F6200532F95 /* Project object */;
 			proxyType = 1;
 			remoteGlobalIDString = 07BBC1662FEA8F6200532F95;
-			remoteInfo = CB;
+			remoteInfo = ClipSnap;
 		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
-		07BBC1672FEA8F6200532F95 /* Clipboard Bro.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Clipboard Bro.app"; sourceTree = BUILT_PRODUCTS_DIR; };
-		07BBC1792FEA8F6300532F95 /* Clipboard BroTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "Clipboard BroTests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
-		07BBC1832FEA8F6300532F95 /* Clipboard BroUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "Clipboard BroUITests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
+		07BBC1672FEA8F6200532F95 /* ClipSnap.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ClipSnap.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		07BBC1792FEA8F6300532F95 /* ClipSnapTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ClipSnapTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		07BBC1832FEA8F6300532F95 /* ClipSnapUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ClipSnapUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -85,9 +85,9 @@
 		07BBC1682FEA8F6200532F95 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				07BBC1672FEA8F6200532F95 /* Clipboard Bro.app */,
-				07BBC1792FEA8F6300532F95 /* Clipboard BroTests.xctest */,
-				07BBC1832FEA8F6300532F95 /* Clipboard BroUITests.xctest */,
+				07BBC1672FEA8F6200532F95 /* ClipSnap.app */,
+				07BBC1792FEA8F6300532F95 /* ClipSnapTests.xctest */,
+				07BBC1832FEA8F6300532F95 /* ClipSnapUITests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -95,9 +95,9 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		07BBC1662FEA8F6200532F95 /* Clipboard Bro */ = {
+		07BBC1662FEA8F6200532F95 /* ClipSnap */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = 07BBC18D2FEA8F6300532F95 /* Build configuration list for PBXNativeTarget "Clipboard Bro" */;
+			buildConfigurationList = 07BBC18D2FEA8F6300532F95 /* Build configuration list for PBXNativeTarget "ClipSnap" */;
 			buildPhases = (
 				07BBC1632FEA8F6200532F95 /* Sources */,
 				07BBC1642FEA8F6200532F95 /* Frameworks */,
@@ -110,16 +110,16 @@
 			fileSystemSynchronizedGroups = (
 				07BBC1692FEA8F6200532F95 /* CB */,
 			);
-			name = "Clipboard Bro";
+			name = ClipSnap;
 			packageProductDependencies = (
 			);
 			productName = CB;
-			productReference = 07BBC1672FEA8F6200532F95 /* Clipboard Bro.app */;
+			productReference = 07BBC1672FEA8F6200532F95 /* ClipSnap.app */;
 			productType = "com.apple.product-type.application";
 		};
-		07BBC1782FEA8F6300532F95 /* Clipboard BroTests */ = {
+		07BBC1782FEA8F6300532F95 /* ClipSnapTests */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = 07BBC1902FEA8F6300532F95 /* Build configuration list for PBXNativeTarget "Clipboard BroTests" */;
+			buildConfigurationList = 07BBC1902FEA8F6300532F95 /* Build configuration list for PBXNativeTarget "ClipSnapTests" */;
 			buildPhases = (
 				07BBC1752FEA8F6300532F95 /* Sources */,
 				07BBC1762FEA8F6300532F95 /* Frameworks */,
@@ -133,16 +133,16 @@
 			fileSystemSynchronizedGroups = (
 				07BBC17C2FEA8F6300532F95 /* CBTests */,
 			);
-			name = "Clipboard BroTests";
+			name = ClipSnapTests;
 			packageProductDependencies = (
 			);
 			productName = CBTests;
-			productReference = 07BBC1792FEA8F6300532F95 /* Clipboard BroTests.xctest */;
+			productReference = 07BBC1792FEA8F6300532F95 /* ClipSnapTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
 		};
-		07BBC1822FEA8F6300532F95 /* Clipboard BroUITests */ = {
+		07BBC1822FEA8F6300532F95 /* ClipSnapUITests */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = 07BBC1932FEA8F6300532F95 /* Build configuration list for PBXNativeTarget "Clipboard BroUITests" */;
+			buildConfigurationList = 07BBC1932FEA8F6300532F95 /* Build configuration list for PBXNativeTarget "ClipSnapUITests" */;
 			buildPhases = (
 				07BBC17F2FEA8F6300532F95 /* Sources */,
 				07BBC1802FEA8F6300532F95 /* Frameworks */,
@@ -156,11 +156,11 @@
 			fileSystemSynchronizedGroups = (
 				07BBC1862FEA8F6300532F95 /* CBUITests */,
 			);
-			name = "Clipboard BroUITests";
+			name = ClipSnapUITests;
 			packageProductDependencies = (
 			);
 			productName = CBUITests;
-			productReference = 07BBC1832FEA8F6300532F95 /* Clipboard BroUITests.xctest */;
+			productReference = 07BBC1832FEA8F6300532F95 /* ClipSnapUITests.xctest */;
 			productType = "com.apple.product-type.bundle.ui-testing";
 		};
 /* End PBXNativeTarget section */
@@ -186,7 +186,7 @@
 					};
 				};
 			};
-			buildConfigurationList = 07BBC1622FEA8F6200532F95 /* Build configuration list for PBXProject "Clipboard Bro" */;
+			buildConfigurationList = 07BBC1622FEA8F6200532F95 /* Build configuration list for PBXProject "ClipSnap" */;
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
 			knownRegions = (
@@ -200,9 +200,9 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				07BBC1662FEA8F6200532F95 /* Clipboard Bro */,
-				07BBC1782FEA8F6300532F95 /* Clipboard BroTests */,
-				07BBC1822FEA8F6300532F95 /* Clipboard BroUITests */,
+				07BBC1662FEA8F6200532F95 /* ClipSnap */,
+				07BBC1782FEA8F6300532F95 /* ClipSnapTests */,
+				07BBC1822FEA8F6300532F95 /* ClipSnapUITests */,
 			);
 		};
 /* End PBXProject section */
@@ -258,12 +258,12 @@
 /* Begin PBXTargetDependency section */
 		07BBC17B2FEA8F6300532F95 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
-			target = 07BBC1662FEA8F6200532F95 /* Clipboard Bro */;
+			target = 07BBC1662FEA8F6200532F95 /* ClipSnap */;
 			targetProxy = 07BBC17A2FEA8F6300532F95 /* PBXContainerItemProxy */;
 		};
 		07BBC1852FEA8F6300532F95 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
-			target = 07BBC1662FEA8F6200532F95 /* Clipboard Bro */;
+			target = 07BBC1662FEA8F6200532F95 /* ClipSnap */;
 			targetProxy = 07BBC1842FEA8F6300532F95 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
@@ -399,7 +399,7 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_CFBundleDisplayName = "Clipboard Bro";
+				INFOPLIST_KEY_CFBundleDisplayName = ClipSnap;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -407,7 +407,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = adrianfeeger.CB;
+				PRODUCT_BUNDLE_IDENTIFIER = adrianfeeger.ClipSnap;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -431,8 +431,8 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_CFBundleDisplayName = "Clipboard Bro";
-				"INFOPLIST_KEY_CFBundleDisplayName[sdk=macosx*]" = "Clipboard Bro";
+				INFOPLIST_KEY_CFBundleDisplayName = ClipSnap;
+				"INFOPLIST_KEY_CFBundleDisplayName[sdk=macosx*]" = ClipSnap;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -440,7 +440,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = adrianfeeger.CB;
+				PRODUCT_BUNDLE_IDENTIFIER = adrianfeeger.ClipSnap;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -461,14 +461,14 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 26.5;
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = adrianfeeger.CBTests;
+				PRODUCT_BUNDLE_IDENTIFIER = adrianfeeger.ClipSnapTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_EMIT_LOC_STRINGS = NO;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Clipboard Bro.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Clipboard Bro";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/ClipSnap.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/ClipSnap";
 			};
 			name = Debug;
 		};
@@ -481,14 +481,14 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 26.5;
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = adrianfeeger.CBTests;
+				PRODUCT_BUNDLE_IDENTIFIER = adrianfeeger.ClipSnapTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_EMIT_LOC_STRINGS = NO;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Clipboard Bro.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Clipboard Bro";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/ClipSnap.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/ClipSnap";
 			};
 			name = Release;
 		};
@@ -499,14 +499,14 @@
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = adrianfeeger.CBUITests;
+				PRODUCT_BUNDLE_IDENTIFIER = adrianfeeger.ClipSnapUITests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_EMIT_LOC_STRINGS = NO;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
-				TEST_TARGET_NAME = CB;
+				TEST_TARGET_NAME = ClipSnap;
 			};
 			name = Debug;
 		};
@@ -517,21 +517,21 @@
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = adrianfeeger.CBUITests;
+				PRODUCT_BUNDLE_IDENTIFIER = adrianfeeger.ClipSnapUITests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_EMIT_LOC_STRINGS = NO;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
-				TEST_TARGET_NAME = CB;
+				TEST_TARGET_NAME = ClipSnap;
 			};
 			name = Release;
 		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		07BBC1622FEA8F6200532F95 /* Build configuration list for PBXProject "Clipboard Bro" */ = {
+		07BBC1622FEA8F6200532F95 /* Build configuration list for PBXProject "ClipSnap" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				07BBC18B2FEA8F6300532F95 /* Debug */,
@@ -540,7 +540,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		07BBC18D2FEA8F6300532F95 /* Build configuration list for PBXNativeTarget "Clipboard Bro" */ = {
+		07BBC18D2FEA8F6300532F95 /* Build configuration list for PBXNativeTarget "ClipSnap" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				07BBC18E2FEA8F6300532F95 /* Debug */,
@@ -549,7 +549,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		07BBC1902FEA8F6300532F95 /* Build configuration list for PBXNativeTarget "Clipboard BroTests" */ = {
+		07BBC1902FEA8F6300532F95 /* Build configuration list for PBXNativeTarget "ClipSnapTests" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				07BBC1912FEA8F6300532F95 /* Debug */,
@@ -558,7 +558,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		07BBC1932FEA8F6300532F95 /* Build configuration list for PBXNativeTarget "Clipboard BroUITests" */ = {
+		07BBC1932FEA8F6300532F95 /* Build configuration list for PBXNativeTarget "ClipSnapUITests" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				07BBC1942FEA8F6300532F95 /* Debug */,

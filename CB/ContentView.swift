@@ -134,6 +134,12 @@ struct ContentView: View {
                         Button("Capture Display") {
                             screenCaptureService.capture(.display)
                         }
+
+                        Divider()
+
+                        Button("Record Display") {
+                            screenCaptureService.capture(.recording)
+                        }
                     } label: {
                         Label("Capture", systemImage: "camera.viewfinder")
                     }
@@ -291,8 +297,24 @@ struct ContentView: View {
                 VStack(spacing: 10) {
                     ProgressView()
                     Text(statusText)
-                    Button("Cancel") {
-                        screenCaptureService.cancelCapture()
+                    if screenCaptureService.isRecording || screenCaptureService.isRecordingPaused {
+                        HStack(spacing: 8) {
+                            Button(screenCaptureService.isRecordingPaused ? "Continue" : "Pause") {
+                                if screenCaptureService.isRecordingPaused {
+                                    screenCaptureService.resumeRecording()
+                                } else {
+                                    screenCaptureService.pauseRecording()
+                                }
+                            }
+
+                            Button("Stop") {
+                                screenCaptureService.stopRecording()
+                            }
+                        }
+                    } else {
+                        Button("Cancel") {
+                            screenCaptureService.cancelCapture()
+                        }
                     }
                 }
                 .padding(18)

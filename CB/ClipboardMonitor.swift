@@ -195,6 +195,56 @@ final class ClipboardMonitor: ObservableObject {
         }
     }
 
+    @discardableResult
+    func importScreenRecording(
+        _ data: Data,
+        sourceDescription: String
+    ) -> String? {
+        guard !data.isEmpty else {
+            logger.error("Failed to import empty screen recording")
+            return nil
+        }
+
+        let item = ClipboardItem.make(
+            in: context,
+            type: ClipboardItemType.video,
+            previewText: sourceDescription,
+            rawData: data,
+            utiType: UTType.mpeg4Movie.identifier,
+            sourceApp: "Screen Recording",
+            sourceBundleIdentifier: Bundle.main.bundleIdentifier
+        )
+        applyAutomation(to: item)
+        item.isSensitive = false
+
+        let settings = ClipboardSettings.load()
+        do {
+            if let duplicate = findDuplicate(of: item) {
+                context.delete(item)
+                if settings.moveDuplicatesToTop {
+                    let now = Date()
+                    duplicate.createdAt = now
+                    duplicate.updatedAt = now
+                    duplicate.sourceApp = "Screen Recording"
+                    duplicate.sourceBundleIdentifier = Bundle.main.bundleIdentifier
+                }
+                try context.save()
+                ClipboardSpotlightIndexer.shared.indexItem(duplicate)
+                return duplicate.id?.uuidString
+            }
+
+            try context.save()
+            ClipboardSpotlightIndexer.shared.indexItem(item)
+            cleanupService.clean(context: context, settings: settings)
+            logger.info("Stored screen recording, bytes \(data.count, privacy: .public)")
+            return item.id?.uuidString
+        } catch {
+            context.rollback()
+            logger.error("Failed to save screen recording: \(error.localizedDescription, privacy: .public)")
+            return nil
+        }
+    }
+
     func applyPostCaptureActions(
         to itemIdentifier: String,
         actions: ScreenCapturePostActions
