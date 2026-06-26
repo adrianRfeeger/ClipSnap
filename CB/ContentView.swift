@@ -668,13 +668,16 @@ private struct ClipboardDetailView: View {
     let recognizeTextAction: () -> Void
     let editImageAction: () -> Void
     let deleteAction: () -> Void
+    @AppStorage("showsClipboardItemMetadata")
+    private var showsItemMetadata = true
     @State private var revealsSensitiveContent = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            header
-
-            Divider()
+            if showsItemMetadata {
+                header
+                Divider()
+            }
 
             if item.shouldProtectPreview && !revealsSensitiveContent {
                 ContentUnavailableView {
@@ -697,7 +700,10 @@ private struct ClipboardDetailView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             }
 
-            metadata
+            if showsItemMetadata {
+                Divider()
+                metadata
+            }
         }
         .padding(24)
         .onDrag {
@@ -736,6 +742,15 @@ private struct ClipboardDetailView: View {
                     Label(
                         item.isLocalOnly ? "Move to iCloud" : "Keep on This Mac",
                         systemImage: item.isLocalOnly ? "icloud.and.arrow.up" : "macbook"
+                    )
+                }
+
+                Button {
+                    showsItemMetadata.toggle()
+                } label: {
+                    Label(
+                        showsItemMetadata ? "Hide Metadata" : "Show Metadata",
+                        systemImage: showsItemMetadata ? "sidebar.right" : "sidebar.right"
                     )
                 }
 

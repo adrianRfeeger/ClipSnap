@@ -1,5 +1,7 @@
+import AppKit
 import CoreData
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct SettingsView: View {
     @Environment(\.managedObjectContext) private var viewContext
@@ -55,6 +57,8 @@ struct SettingsView: View {
     private var otherRetentionDays = ClipboardSettings.defaults.otherRetentionDays
 
     @State private var isConfirmingClear = false
+    @State private var selectedExcludedBundleIdentifiers: Set<String> = []
+    @State private var excludedApplicationErrorMessage: String?
 
     @AppStorage(ScreenCaptureSettingKey.showsCursor)
     private var screenCaptureShowsCursor = false
@@ -218,11 +222,43 @@ struct SettingsView: View {
                 .foregroundStyle(.secondary)
 
                 Section("Excluded Applications") {
-                    TextEditor(text: $excludedBundleIdentifiers)
-                        .font(.system(.body, design: .monospaced))
-                        .frame(minHeight: 120)
+                    VStack(spacing: 8) {
+                        if excludedApplications.isEmpty {
+                            ContentUnavailableView(
+                                "No Excluded Applications",
+                                systemImage: "app.badge",
+                                description: Text("Clipboard Bro will monitor clipboard changes from every application.")
+                            )
+                            .frame(minHeight: 120)
+                        } else {
+                            List(selection: $selectedExcludedBundleIdentifiers) {
+                                ForEach(excludedApplications) { application in
+                                    ExcludedApplicationRow(application: application)
+                                        .tag(application.bundleIdentifier)
+                                }
+                            }
+                            .frame(minHeight: 120)
+                        }
 
-                    Text("Enter bundle identifiers separated by commas or new lines.")
+                        HStack {
+                            Button {
+                                addExcludedApplications()
+                            } label: {
+                                Label("Add Application", systemImage: "plus")
+                            }
+
+                            Button {
+                                removeSelectedExcludedApplications()
+                            } label: {
+                                Label("Remove", systemImage: "minus")
+                            }
+                            .disabled(selectedExcludedBundleIdentifiers.isEmpty)
+
+                            Spacer()
+                        }
+                    }
+
+                    Text("Add an app to prevent Clipboard Bro from saving clipboard changes made while that app is active.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -398,6 +434,21 @@ struct SettingsView: View {
         } message: {
             Text("Pinned and favorite items will also be removed.")
         }
+        .alert(
+            "Excluded Applications",
+            isPresented: Binding(
+                get: { excludedApplicationErrorMessage != nil },
+                set: { isPresented in
+                    if !isPresented {
+                        excludedApplicationErrorMessage = nil
+                    }
+                }
+            )
+        ) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(excludedApplicationErrorMessage ?? "")
+        }
     }
 
     private var retentionDescription: String {
@@ -425,6 +476,14 @@ struct SettingsView: View {
                 )
             }
         )
+    }
+
+    private var excludedApplications: [ExcludedApplication] {
+        ClipboardSettings.parseBundleIdentifiers(excludedBundleIdentifiers)
+            .map(ExcludedApplication.init(bundleIdentifier:))
+            .sorted {
+                $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
+            }
     }
 
     private func displayName(for type: String) -> String {
@@ -481,5 +540,107 @@ struct SettingsView: View {
         } catch {
             viewContext.rollback()
         }
+    }
+
+    private func addExcludedApplications() {
+        let panel = NSOpenPanel()
+        panel.title = "Choose Applications to Exclude"
+        panel.prompt = "Add"
+        panel.directoryURL = URL(fileURLWithPath: "/Applications", isDirectory: true)
+        panel.allowedContentTypes = [.applicationBundle]
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+
+        guard panel.runModal() == .OK else {
+            return
+        }
+
+        var identifiers = ClipboardSettings.parseBundleIdentifiers(excludedBundleIdentifiers)
+        var skippedApplicationNames: [String] = []
+
+        for url in panel.urls {
+            let didStartAccess = url.startAccessingSecurityScopedResource()
+            defer {
+                if didStartAccess {
+                    url.stopAccessingSecurityScopedResource()
+                }
+            }
+
+            if let bundleIdentifier = Bundle(url: url)?.bundleIdentifier?.lowercased() {
+                identifiers.insert(bundleIdentifier)
+            } else {
+                skippedApplicationNames.append(url.deletingPathExtension().lastPathComponent)
+            }
+        }
+
+        excludedBundleIdentifiers = ClipboardSettings.formattedBundleIdentifiers(identifiers)
+        selectedExcludedBundleIdentifiers = selectedExcludedBundleIdentifiers.intersection(identifiers)
+
+        if !skippedApplicationNames.isEmpty {
+            excludedApplicationErrorMessage = "Could not read a bundle identifier for: "
+                + skippedApplicationNames.joined(separator: ", ")
+        }
+    }
+
+    private func removeSelectedExcludedApplications() {
+        var identifiers = ClipboardSettings.parseBundleIdentifiers(excludedBundleIdentifiers)
+        identifiers.subtract(selectedExcludedBundleIdentifiers)
+        excludedBundleIdentifiers = ClipboardSettings.formattedBundleIdentifiers(identifiers)
+        selectedExcludedBundleIdentifiers.removeAll()
+    }
+}
+
+private struct ExcludedApplication: Identifiable {
+    let bundleIdentifier: String
+
+    var id: String {
+        bundleIdentifier
+    }
+
+    var applicationURL: URL? {
+        NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleIdentifier)
+    }
+
+    var displayName: String {
+        if let applicationURL,
+           let name = Bundle(url: applicationURL)?.object(
+            forInfoDictionaryKey: "CFBundleDisplayName"
+           ) as? String ?? Bundle(url: applicationURL)?.object(
+            forInfoDictionaryKey: "CFBundleName"
+           ) as? String {
+            return name
+        }
+
+        return bundleIdentifier
+    }
+
+    var icon: NSImage {
+        if let applicationURL {
+            return NSWorkspace.shared.icon(forFile: applicationURL.path)
+        }
+
+        return NSWorkspace.shared.icon(for: .applicationBundle)
+    }
+}
+
+private struct ExcludedApplicationRow: View {
+    let application: ExcludedApplication
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(nsImage: application.icon)
+                .resizable()
+                .frame(width: 24, height: 24)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(application.displayName)
+                Text(application.bundleIdentifier)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+        }
+        .padding(.vertical, 2)
     }
 }

@@ -115,6 +115,14 @@ struct ClipboardSettings {
         )
     }
 
+    static func formattedBundleIdentifiers(_ identifiers: Set<String>) -> String {
+        identifiers
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+            .filter { !$0.isEmpty }
+            .sorted()
+            .joined(separator: "\n")
+    }
+
     private static func positiveValue(_ value: Int, fallback: Int) -> Int {
         value > 0 ? value : fallback
     }

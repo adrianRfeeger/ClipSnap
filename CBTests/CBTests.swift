@@ -53,6 +53,10 @@ struct CBTests {
                 excludedBundleIdentifiers: identifiers
             )
         )
+        #expect(
+            ClipboardSettings.formattedBundleIdentifiers(identifiers)
+                == "com.example.passwords\ncom.example.secrets"
+        )
     }
 
     @Test func representationOrderAffectsContentIdentity() {
@@ -591,7 +595,7 @@ struct CBTests {
     }
 
     @Test func imageCropChangesDimensionsAndRedactionPreservesThem() throws {
-        let image = try #require(makeTestImage())
+        let image = try #require(makeQuadrantTestImage())
         let data = try #require(
             NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:])
         )
@@ -618,6 +622,32 @@ struct CBTests {
         #expect(redacted.height == 4)
         #expect(outlined.width == 4)
         #expect(outlined.height == 4)
+        #expect(isRedDominant(pixel(in: cropped, x: 0, y: 0)))
+        #expect(isBlack(pixel(in: redacted, x: 0, y: 0)))
+    }
+
+    @Test func imageAnnotationsPreserveDimensionsAndChangeContent() throws {
+        let image = try #require(makeTestImage())
+        let data = try #require(
+            NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:])
+        )
+        let selection = CGRect(x: 0.1, y: 0.1, width: 0.8, height: 0.8)
+        let annotatedData = try #require(
+            ClipboardImageEditing.edit(
+                data,
+                normalizedSelection: selection,
+                operation: .rectangle(
+                    color: CGColor(red: 1, green: 0, blue: 0, alpha: 1),
+                    lineWidth: 2
+                )
+            )
+        )
+        let source = try #require(CGImageSourceCreateWithData(annotatedData as CFData, nil))
+        let annotated = try #require(CGImageSourceCreateImageAtIndex(source, 0, nil))
+
+        #expect(annotated.width == image.width)
+        #expect(annotated.height == image.height)
+        #expect(annotatedData != data)
     }
 
     @Test func zipArchiveParserReadsCentralDirectoryEntries() {
@@ -648,5 +678,63 @@ struct CBTests {
         context.setFillColor(CGColor(red: 0.2, green: 0.4, blue: 0.8, alpha: 1))
         context.fill(CGRect(x: 0, y: 0, width: 4, height: 4))
         return context.makeImage()
+    }
+
+    private func makeQuadrantTestImage() -> CGImage? {
+        guard let context = CGContext(
+            data: nil,
+            width: 4,
+            height: 4,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else {
+            return nil
+        }
+
+        context.setFillColor(CGColor(red: 1, green: 0, blue: 0, alpha: 1))
+        context.fill(CGRect(x: 0, y: 2, width: 2, height: 2))
+        context.setFillColor(CGColor(red: 0, green: 1, blue: 0, alpha: 1))
+        context.fill(CGRect(x: 2, y: 2, width: 2, height: 2))
+        context.setFillColor(CGColor(red: 0, green: 0, blue: 1, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: 2, height: 2))
+        context.setFillColor(CGColor(red: 1, green: 1, blue: 0, alpha: 1))
+        context.fill(CGRect(x: 2, y: 0, width: 2, height: 2))
+        return context.makeImage()
+    }
+
+    private func pixel(in image: CGImage, x: Int, y: Int) -> [UInt8] {
+        var pixel = [UInt8](repeating: 0, count: 4)
+        guard let context = CGContext(
+            data: &pixel,
+            width: 1,
+            height: 1,
+            bitsPerComponent: 8,
+            bytesPerRow: 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else {
+            return pixel
+        }
+
+        context.draw(
+            image,
+            in: CGRect(
+                x: -x,
+                y: y - image.height + 1,
+                width: image.width,
+                height: image.height
+            )
+        )
+        return pixel
+    }
+
+    private func isRedDominant(_ pixel: [UInt8]) -> Bool {
+        pixel[0] > 180 && pixel[1] < 100 && pixel[2] < 100
+    }
+
+    private func isBlack(_ pixel: [UInt8]) -> Bool {
+        pixel[0] < 40 && pixel[1] < 40 && pixel[2] < 40
     }
 }
