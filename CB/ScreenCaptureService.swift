@@ -136,7 +136,7 @@ final class ScreenCaptureService: NSObject, ObservableObject {
             let image = try await SCScreenshotManager.captureImage(in: rect)
             switch purpose {
             case .image:
-                finishCapture(image: image, sourceDescription: "Region Capture")
+                await finishCapture(image: image, sourceDescription: "Region Capture")
             case .text:
                 statusText = "Recognizing text…"
                 let sourceIdentifier = clipboardMonitor.importScreenCapture(
@@ -202,7 +202,7 @@ final class ScreenCaptureService: NSObject, ObservableObject {
                 throw ScreenCaptureError.missingImage
             }
 
-            finishCapture(image: image, sourceDescription: sourceDescription(for: filter))
+            await finishCapture(image: image, sourceDescription: sourceDescription(for: filter))
         } catch {
             failCapture(error)
         }
@@ -221,12 +221,39 @@ final class ScreenCaptureService: NSObject, ObservableObject {
         }
     }
 
-    private func finishCapture(image: CGImage, sourceDescription: String) {
-        lastCapturedItemIdentifier = clipboardMonitor.importScreenCapture(
+    private func finishCapture(image: CGImage, sourceDescription: String) async {
+        let capturedIdentifier = clipboardMonitor.importScreenCapture(
             image,
             sourceDescription: sourceDescription,
             copyToPasteboard: UserDefaults.standard.bool(forKey: ScreenCaptureSettingKey.copiesAfterCapture)
         )
+        lastCapturedItemIdentifier = capturedIdentifier
+
+        let actions = ScreenCapturePostActions.load()
+        if let capturedIdentifier {
+            clipboardMonitor.applyPostCaptureActions(
+                to: capturedIdentifier,
+                actions: actions
+            )
+        }
+
+        if actions.automaticallyRecognizesText, let capturedIdentifier {
+            statusText = "Recognizing captured text…"
+            do {
+                try await finishOCRCapture(
+                    image: image,
+                    sourceItemIdentifier: capturedIdentifier
+                )
+                lastCapturedItemIdentifier = capturedIdentifier
+            } catch ScreenCaptureError.noRecognizedText {
+                lastCapturedItemIdentifier = capturedIdentifier
+                isCapturing = false
+                statusText = nil
+            } catch {
+                failCapture(error)
+                return
+            }
+        }
         isCapturing = false
         statusText = nil
         picker.isActive = false

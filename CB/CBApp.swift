@@ -11,13 +11,23 @@ import CoreData
 @main
 struct ClipboardBroApp: App {
     private let persistenceController: PersistenceController
+    private let isUITesting: Bool
     @StateObject private var clipboardMonitor: ClipboardMonitor
     @StateObject private var cloudSyncMonitor: CloudSyncMonitor
     @StateObject private var screenCaptureService: ScreenCaptureService
 
     init() {
-        let persistenceController = PersistenceController.shared
+        let isUITesting = AppLaunchConfiguration.isUITesting
+        self.isUITesting = isUITesting
+        let persistenceController = isUITesting
+            ? PersistenceController(inMemory: true)
+            : PersistenceController.shared
         self.persistenceController = persistenceController
+        if isUITesting {
+            AppLaunchConfiguration.seedUITestData(
+                in: persistenceController.container.viewContext
+            )
+        }
         let clipboardMonitor = ClipboardMonitor(context: persistenceController.container.viewContext)
         _clipboardMonitor = StateObject(wrappedValue: clipboardMonitor)
         _cloudSyncMonitor = StateObject(
@@ -37,8 +47,10 @@ struct ClipboardBroApp: App {
             )
                 .environment(\.managedObjectContext, persistenceController.container.viewContext)
                 .onAppear {
-                    clipboardMonitor.start()
-                    cloudSyncMonitor.start()
+                    if !isUITesting {
+                        clipboardMonitor.start()
+                        cloudSyncMonitor.start()
+                    }
                 }
         }
         .commands {
@@ -76,8 +88,10 @@ struct ClipboardBroApp: App {
             )
                 .environment(\.managedObjectContext, persistenceController.container.viewContext)
                 .onAppear {
-                    clipboardMonitor.start()
-                    cloudSyncMonitor.start()
+                    if !isUITesting {
+                        clipboardMonitor.start()
+                        cloudSyncMonitor.start()
+                    }
                 }
         }
         .menuBarExtraStyle(.menu)
@@ -97,7 +111,9 @@ struct ClipboardBroApp: App {
             )
                 .environment(\.managedObjectContext, persistenceController.container.viewContext)
                 .onAppear {
-                    cloudSyncMonitor.start()
+                    if !isUITesting {
+                        cloudSyncMonitor.start()
+                    }
                 }
         }
     }

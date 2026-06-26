@@ -39,6 +39,7 @@ struct QuickClipboardPicker: View {
                     .textFieldStyle(.plain)
                     .focused($searchIsFocused)
                     .onSubmit(copySelection)
+                    .accessibilityIdentifier("quickClipboard.search")
 
                 if !searchText.isEmpty {
                     Button {
@@ -90,6 +91,7 @@ struct QuickClipboardPicker: View {
                                 .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
+                            .accessibilityIdentifier("quickClipboard.item.\(index)")
                             .listRowBackground(
                                 RoundedRectangle(cornerRadius: 6)
                                     .fill(index == selectedIndex ? Color.accentColor.opacity(0.18) : .clear)
@@ -124,6 +126,7 @@ struct QuickClipboardPicker: View {
             .padding(.vertical, 9)
         }
         .frame(width: 520, height: 430)
+        .accessibilityIdentifier("quickClipboard.main")
         .onAppear {
             selectedIndex = 0
             searchIsFocused = true

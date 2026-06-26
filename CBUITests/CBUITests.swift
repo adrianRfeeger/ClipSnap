@@ -23,21 +23,51 @@ final class CBUITests: XCTestCase {
     }
 
     @MainActor
-    func testExample() throws {
-        // UI tests must launch the application that they test.
-        let app = XCUIApplication()
+    func testHistorySelectionAndSearch() throws {
+        let app = makeApplication()
         app.launch()
 
-        // Use XCTAssert and related functions to verify your tests produce the correct results.
-        // XCUIAutomation Documentation
-        // https://developer.apple.com/documentation/xcuiautomation
+        XCTAssertTrue(app.otherElements["clipboard.main"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["UI Test Note"].exists)
+        XCTAssertTrue(app.staticTexts["UI Test URL"].exists)
+
+        app.staticTexts["UI Test Note"].click()
+        XCTAssertTrue(app.buttons["clipboard.detail.copy"].waitForExistence(timeout: 2))
+
+        let searchField = app.searchFields.firstMatch
+        XCTAssertTrue(searchField.exists)
+        searchField.click()
+        searchField.typeText("type:url")
+
+        XCTAssertTrue(app.staticTexts["UI Test URL"].waitForExistence(timeout: 2))
+        XCTAssertFalse(app.staticTexts["UI Test Note"].exists)
+    }
+
+    @MainActor
+    func testQuickPickerOpensWithKeyboardShortcut() throws {
+        let app = makeApplication()
+        app.launch()
+
+        app.typeKey("v", modifierFlags: [.command, .shift])
+
+        XCTAssertTrue(
+            app.otherElements["quickClipboard.main"].waitForExistence(timeout: 3)
+        )
+        XCTAssertTrue(app.textFields["quickClipboard.search"].exists)
+        XCTAssertTrue(app.staticTexts["UI Test Note"].exists)
     }
 
     @MainActor
     func testLaunchPerformance() throws {
         // This measures how long it takes to launch your application.
         measure(metrics: [XCTApplicationLaunchMetric()]) {
-            XCUIApplication().launch()
+            makeApplication().launch()
         }
+    }
+
+    private func makeApplication() -> XCUIApplication {
+        let app = XCUIApplication()
+        app.launchArguments = ["--ui-testing"]
+        return app
     }
 }

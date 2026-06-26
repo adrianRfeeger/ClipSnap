@@ -9,7 +9,7 @@ This document is the implementation contract for extending Clipboard Bro. Work i
 - [x] Expose capture/OCR progress and actionable Screen Recording permission UI.
 - [x] Improve OCR cancellation and error handling.
 - [x] Add a keyboard-first quick clipboard picker.
-- [ ] Add focused unit/UI coverage.
+- [x] Add focused unit/UI coverage.
 
 ## Milestone 2 — Organization and search
 
@@ -39,13 +39,13 @@ This document is the implementation contract for extending Clipboard Bro. Work i
 
 ## Milestone 6 — Automation and export
 
-- [ ] Add rules for JSON formatting, URL cleanup, whitespace normalization, automatic OCR, and tagging. *(JSON formatting, URL cleanup, whitespace normalization, and tagging implemented.)*
-- [ ] Add configurable post-capture actions.
-- [ ] Add file/archive export, sharing services, and Markdown/JSON/CSV/plain-text export.
+- [x] Add rules for JSON formatting, URL cleanup, whitespace normalization, automatic OCR, and tagging.
+- [x] Add configurable post-capture actions.
+- [x] Add file/archive export, sharing services, and Markdown/JSON/CSV/plain-text export.
 
 ## Milestone 7 — Shipping quality
 
-- [ ] Expand unit, UI, CloudKit, multi-display, scaling, large-payload, and performance coverage.
+- [ ] Expand unit, UI, CloudKit, multi-display, scaling, large-payload, and performance coverage. *(Deterministic launch, history selection/search, quick-picker, automation, storage, and image-editing coverage implemented.)*
 - [ ] Audit sandbox entitlements, onboarding, accessibility, localization, signing, notarization, diagnostics, and release notes.
 
 ## Completed foundation

@@ -195,6 +195,32 @@ final class ClipboardMonitor: ObservableObject {
         }
     }
 
+    func applyPostCaptureActions(
+        to itemIdentifier: String,
+        actions: ScreenCapturePostActions
+    ) {
+        guard let uuid = UUID(uuidString: itemIdentifier) else {
+            return
+        }
+        let request = ClipboardItem.fetchRequest()
+        request.fetchLimit = 1
+        request.predicate = NSPredicate(format: "id == %@", uuid as CVarArg)
+        guard let item = try? context.fetch(request).first else {
+            return
+        }
+
+        actions.apply(to: item)
+        do {
+            try context.save()
+            ClipboardSpotlightIndexer.shared.indexItem(item)
+        } catch {
+            context.rollback()
+            logger.error(
+                "Failed to apply post-capture actions: \(error.localizedDescription, privacy: .public)"
+            )
+        }
+    }
+
     @discardableResult
     func importRecognizedText(
         _ text: String,

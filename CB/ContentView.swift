@@ -1,5 +1,6 @@
-import SwiftUI
+import AppKit
 import CoreData
+import SwiftUI
 import UniformTypeIdentifiers
 
 struct ContentView: View {
@@ -25,6 +26,7 @@ struct ContentView: View {
     @State private var isDropTargeted = false
     @State private var isEditingBatchMetadata = false
     @State private var imageEditingItem: ClipboardItem?
+    @State private var exportErrorMessage: String?
 
     private var filteredItems: [ClipboardItem] {
         let query = ClipboardSearchQuery(searchText)
@@ -57,10 +59,15 @@ struct ContentView: View {
                     )
                         .contentShape(Rectangle())
                         .tag(item.selectionIdentifier)
+                        .simultaneousGesture(
+                            TapGesture().onEnded {
+                                select(item)
+                            }
+                        )
                         .onDrag {
                             ClipboardDragDropSupport.itemProvider(for: item)
                         } preview: {
-                            Label(item.menuTitle, systemImage: item.systemImageName)
+                            Label(item.protectedMenuTitle, systemImage: item.systemImageName)
                                 .padding(8)
                                 .background(.regularMaterial)
                                 .clipShape(RoundedRectangle(cornerRadius: 6))
@@ -84,13 +91,14 @@ struct ContentView: View {
 
                             Divider()
 
-                            Button("Delete", role: .destructive) {
-                                delete(item)
+                            Button(contextMenuDeleteTitle(for: item), role: .destructive) {
+                                deleteContextMenuItems(for: item)
                             }
                         }
                 }
                 .onDelete(perform: deleteItems)
             }
+            .accessibilityIdentifier("clipboard.history.list")
             .navigationTitle("Clipboard")
             .searchable(
                 text: $searchText,
@@ -129,6 +137,7 @@ struct ContentView: View {
                     } label: {
                         Label("Capture", systemImage: "camera.viewfinder")
                     }
+                    .accessibilityIdentifier("clipboard.capture.menu")
                     .disabled(screenCaptureService.isCapturing)
                 }
 
@@ -142,6 +151,33 @@ struct ContentView: View {
                             if selectedItems.compactMap(\.plainText).count >= 2 {
                                 Button("Merge Text Items") {
                                     mergeSelectedTextItems()
+                                }
+                            }
+
+                            Menu("Export") {
+                                if let item = selectedItem {
+                                    Button("Native Format…") {
+                                        performExport {
+                                            try ClipboardExportService.exportNative(item)
+                                        }
+                                    }
+                                }
+
+                                ForEach(ClipboardExportFormat.allCases) { format in
+                                    Button("\(format.title)…") {
+                                        performExport {
+                                            try ClipboardExportService.export(
+                                                selectedItems,
+                                                format: format
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+
+                            Button("Share…") {
+                                performExport {
+                                    try ClipboardExportService.share(selectedItems)
                                 }
                             }
 
@@ -168,12 +204,7 @@ struct ContentView: View {
                             Divider()
 
                             Button("Delete Selected", role: .destructive) {
-                                selectedItems.forEach(viewContext.delete)
-                                ClipboardSpotlightIndexer.shared.deleteIdentifiers(
-                                    selectedItems.compactMap { $0.id?.uuidString }
-                                )
-                                selectedItemIdentifiers.removeAll()
-                                saveContext()
+                                delete(selectedItems)
                             }
                         } label: {
                             Label(
@@ -248,6 +279,7 @@ struct ContentView: View {
                 )
             }
         }
+        .accessibilityIdentifier("clipboard.main")
         .overlay {
             if isDropTargeted {
                 RoundedRectangle(cornerRadius: 6)
@@ -318,12 +350,58 @@ struct ContentView: View {
         } message: {
             Text(screenCaptureService.errorMessage ?? "")
         }
+        .alert(
+            "Export",
+            isPresented: Binding(
+                get: { exportErrorMessage != nil },
+                set: { isPresented in
+                    if !isPresented {
+                        exportErrorMessage = nil
+                    }
+                }
+            )
+        ) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(exportErrorMessage ?? "")
+        }
     }
 
     private func toggle(_ keyPath: ReferenceWritableKeyPath<ClipboardItem, Bool>, on item: ClipboardItem) {
         item[keyPath: keyPath].toggle()
         item.updatedAt = Date()
         saveContext()
+    }
+
+    private func select(_ item: ClipboardItem) {
+        let identifier = item.selectionIdentifier
+        let modifiers = NSEvent.modifierFlags.intersection(.deviceIndependentFlagsMask)
+
+        if modifiers.contains(.command) {
+            if selectedItemIdentifiers.contains(identifier) {
+                selectedItemIdentifiers.remove(identifier)
+            } else {
+                selectedItemIdentifiers.insert(identifier)
+            }
+            return
+        }
+
+        if modifiers.contains(.shift),
+           let anchorIdentifier = selectedItemIdentifier,
+           let anchorIndex = filteredItems.firstIndex(
+            where: { $0.selectionIdentifier == anchorIdentifier }
+           ),
+           let itemIndex = filteredItems.firstIndex(
+            where: { $0.selectionIdentifier == identifier }
+           ) {
+            let range = min(anchorIndex, itemIndex)...max(anchorIndex, itemIndex)
+            selectedItemIdentifiers = Set(
+                range.map { filteredItems[$0].selectionIdentifier }
+            )
+            return
+        }
+
+        selectedItemIdentifiers = [identifier]
     }
 
     private func delete(_ item: ClipboardItem) {
@@ -333,6 +411,39 @@ struct ContentView: View {
         }
         viewContext.delete(item)
         saveContext()
+    }
+
+    private func delete(_ items: [ClipboardItem]) {
+        let itemsToDelete = Array(Set(items))
+        guard !itemsToDelete.isEmpty else {
+            return
+        }
+
+        selectedItemIdentifiers.subtract(
+            itemsToDelete.map(\.selectionIdentifier)
+        )
+        ClipboardSpotlightIndexer.shared.deleteIdentifiers(
+            itemsToDelete.compactMap { $0.id?.uuidString }
+        )
+        itemsToDelete.forEach(viewContext.delete)
+        saveContext()
+    }
+
+    private func contextMenuDeleteTitle(for item: ClipboardItem) -> String {
+        contextMenuDeleteItems(for: item).count > 1 ? "Delete Selected" : "Delete"
+    }
+
+    private func deleteContextMenuItems(for item: ClipboardItem) {
+        delete(contextMenuDeleteItems(for: item))
+    }
+
+    private func contextMenuDeleteItems(for item: ClipboardItem) -> [ClipboardItem] {
+        if selectedItemIdentifiers.contains(item.selectionIdentifier),
+           selectedItems.count > 1 {
+            return selectedItems
+        }
+
+        return [item]
     }
 
     private func updateSelectedItems(_ update: (ClipboardItem) -> Void) {
@@ -430,8 +541,16 @@ struct ContentView: View {
         }
     }
 
+    private func performExport(_ action: () throws -> Void) {
+        do {
+            try action()
+        } catch {
+            exportErrorMessage = error.localizedDescription
+        }
+    }
+
     private func deleteItems(offsets: IndexSet) {
-        offsets.map { filteredItems[$0] }.forEach(delete)
+        delete(offsets.map { filteredItems[$0] })
     }
 
     private func saveContext() {
@@ -521,6 +640,13 @@ private struct ClipboardRow: View {
             }
         }
         .padding(.vertical, 3)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("clipboard.item.\(item.selectionIdentifier)")
+        .accessibilityLabel(
+            item.shouldProtectPreview
+                ? "Sensitive Content, \(item.displayType)"
+                : "\(item.displayTitle), \(item.displayType)"
+        )
     }
 
     private var iconName: String {
@@ -583,6 +709,7 @@ private struct ClipboardDetailView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 6))
         }
         .navigationTitle(item.displayType)
+        .accessibilityIdentifier("clipboard.detail")
         .onChange(of: item.selectionIdentifier) {
             revealsSensitiveContent = false
         }
@@ -591,6 +718,7 @@ private struct ClipboardDetailView: View {
                 Button(action: copyAction) {
                     Label("Copy", systemImage: "doc.on.doc")
                 }
+                .accessibilityIdentifier("clipboard.detail.copy")
 
                 Button(action: pinAction) {
                     Label(item.isPinned ? "Unpin" : "Pin", systemImage: item.isPinned ? "pin.slash" : "pin")

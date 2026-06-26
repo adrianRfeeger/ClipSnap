@@ -525,6 +525,71 @@ struct CBTests {
         #expect(item.tags.contains("ocr"))
     }
 
+    @MainActor
+    @Test func aggregateExportsEncodeSelectedMetadata() throws {
+        let persistence = PersistenceController(inMemory: true)
+        let context = persistence.container.viewContext
+        let item = ClipboardItem.make(
+            in: context,
+            type: ClipboardItemType.text,
+            plainText: "Exported content",
+            previewText: "Exported content",
+            sourceApp: "Tests"
+        )
+        item.customTitle = "Example"
+        item.tagsText = "one, two"
+
+        let jsonData = try ClipboardExportService.aggregateData(
+            for: [item],
+            format: .json
+        )
+        let csvData = try ClipboardExportService.aggregateData(
+            for: [item],
+            format: .csv
+        )
+        let json = try #require(
+            try JSONSerialization.jsonObject(with: jsonData) as? [[String: String]]
+        )
+        let csv = try #require(String(data: csvData, encoding: .utf8))
+
+        #expect(json.first?["title"] == "Example")
+        #expect(json.first?["content"] == "Exported content")
+        #expect(csv.contains("\"Example\""))
+        #expect(csv.contains("\"one, two\""))
+    }
+
+    @MainActor
+    @Test func postCaptureActionsApplyMetadataWithoutRemovingAutomationTags() {
+        let persistence = PersistenceController(inMemory: true)
+        let context = persistence.container.viewContext
+        let item = ClipboardItem.make(
+            in: context,
+            type: ClipboardItemType.image,
+            previewText: "Capture",
+            sourceApp: "Screen Capture"
+        )
+        item.tagsText = "screenshot"
+        let actions = ScreenCapturePostActions(
+            automaticallyRecognizesText: true,
+            favoritesCapture: true,
+            pinsCapture: true,
+            tags: ["work", "reference"]
+        )
+
+        actions.apply(to: item)
+
+        #expect(item.isFavorite)
+        #expect(item.isPinned)
+        #expect(item.tags == ["reference", "screenshot", "work"])
+    }
+
+    @Test func postCaptureTagsAreNormalized() {
+        #expect(
+            ScreenCapturePostActions.parseTags("work, reference\nwork")
+                == ["reference", "work"]
+        )
+    }
+
     @Test func imageCropChangesDimensionsAndRedactionPreservesThem() throws {
         let image = try #require(makeTestImage())
         let data = try #require(

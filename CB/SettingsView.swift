@@ -71,6 +71,18 @@ struct SettingsView: View {
     @AppStorage(ScreenCaptureSettingKey.copiesOCRText)
     private var screenCaptureCopiesOCRText = true
 
+    @AppStorage(ScreenCapturePostActionKey.automaticallyRecognizesText)
+    private var screenCaptureAutomaticallyRecognizesText = ScreenCapturePostActions.defaults.automaticallyRecognizesText
+
+    @AppStorage(ScreenCapturePostActionKey.favoritesCapture)
+    private var screenCaptureFavoritesCapture = ScreenCapturePostActions.defaults.favoritesCapture
+
+    @AppStorage(ScreenCapturePostActionKey.pinsCapture)
+    private var screenCapturePinsCapture = ScreenCapturePostActions.defaults.pinsCapture
+
+    @AppStorage(ScreenCapturePostActionKey.captureTags)
+    private var screenCaptureTags = ""
+
     @AppStorage(SpotlightSettingKey.indexesClipboardHistory)
     private var indexesClipboardHistory = false
 
@@ -242,8 +254,23 @@ struct SettingsView: View {
                 Toggle("Copy capture to clipboard", isOn: $screenCaptureCopiesAfterCapture)
                 Toggle("Copy recognized text to clipboard", isOn: $screenCaptureCopiesOCRText)
 
+                Section("After Capture") {
+                    Toggle(
+                        "Recognize text automatically",
+                        isOn: $screenCaptureAutomaticallyRecognizesText
+                    )
+                    Toggle("Add to favorites", isOn: $screenCaptureFavoritesCapture)
+                    Toggle("Pin capture", isOn: $screenCapturePinsCapture)
+                    TextField(
+                        "Tags, separated by commas",
+                        text: $screenCaptureTags
+                    )
+                }
+
                 Section {
-                    Text("Screen captures are stored as PNG images in clipboard history.")
+                    Text(
+                        "Screen captures are stored as PNG images. Automatic OCR creates a linked text item when readable text is found."
+                    )
                         .foregroundStyle(.secondary)
                 }
             }
