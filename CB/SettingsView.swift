@@ -75,6 +75,9 @@ struct SettingsView: View {
     @AppStorage(ScreenCaptureSettingKey.copiesOCRText)
     private var screenCaptureCopiesOCRText = true
 
+    @AppStorage(ScreenCaptureSettingKey.recordingAudioMode)
+    private var screenRecordingAudioMode = ScreenRecordingAudioMode.none.rawValue
+
     @AppStorage(ScreenCapturePostActionKey.automaticallyRecognizesText)
     private var screenCaptureAutomaticallyRecognizesText = ScreenCapturePostActions.defaults.automaticallyRecognizesText
 
@@ -289,6 +292,18 @@ struct SettingsView: View {
                 Toggle("Include sheets and popovers", isOn: $screenCaptureIncludesChildWindows)
                 Toggle("Copy capture to clipboard", isOn: $screenCaptureCopiesAfterCapture)
                 Toggle("Copy recognized text to clipboard", isOn: $screenCaptureCopiesOCRText)
+
+                Section("Screen Recording") {
+                    Picker("Audio", selection: $screenRecordingAudioMode) {
+                        ForEach(ScreenRecordingAudioMode.allCases) { mode in
+                            Text(mode.title).tag(mode.rawValue)
+                        }
+                    }
+
+                    Text("If audio capture cannot start, ClipSnap falls back to a screen-only recording.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
 
                 Section("After Capture") {
                     Toggle(

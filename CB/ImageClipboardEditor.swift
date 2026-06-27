@@ -16,11 +16,18 @@ struct ImageClipboardEditor: View {
     @State private var selectionEnd = CGPoint.zero
     @State private var normalizedSelectionStart = CGPoint.zero
     @State private var normalizedSelectionEnd = CGPoint.zero
+    @State private var freehandPoints: [CGPoint] = []
+    @State private var normalizedFreehandPoints: [CGPoint] = []
     @State private var displayToPixelScale: CGFloat = 1
     @State private var selectedTool = ClipboardImageEditing.Tool.rectangle
     @State private var annotationColor = Color.red
+    @State private var fillColor = Color.clear
+    @State private var fillsShape = false
     @State private var lineWidth: Double = 5
+    @State private var textSize: Double = 24
     @State private var annotationText = ""
+    @State private var annotations: [ImageAnnotation] = []
+    @State private var selectedAnnotationID: UUID?
     @FocusState private var annotationTextIsFocused: Bool
 
     init(image: NSImage, saveAction: @escaping (Data) -> Void) {
@@ -52,8 +59,21 @@ struct ImageClipboardEditor: View {
                             .offset(x: imageRect.minX, y: imageRect.minY)
                     }
 
+                    ForEach(annotations) { annotation in
+                        annotationView(annotation, in: imageRect)
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                select(annotation)
+                            }
+                    }
+
                     if !selection.isEmpty {
                         annotationPreview
+                    }
+
+                    if selectedTool == .freehand, freehandPoints.count > 1 {
+                        FreehandShape(points: freehandPoints)
+                            .stroke(annotationColor, style: StrokeStyle(lineWidth: CGFloat(lineWidth), lineCap: .round, lineJoin: .round))
                     }
                 }
                 .clipShape(RoundedRectangle(cornerRadius: 8))
@@ -66,6 +86,27 @@ struct ImageClipboardEditor: View {
                 }
                 clearSelection()
             }
+            .onChange(of: selectedAnnotationID) {
+                loadSelectedAnnotationControls()
+            }
+            .onChange(of: annotationColor) {
+                updateSelectedAnnotation()
+            }
+            .onChange(of: fillColor) {
+                updateSelectedAnnotation()
+            }
+            .onChange(of: fillsShape) {
+                updateSelectedAnnotation()
+            }
+            .onChange(of: lineWidth) {
+                updateSelectedAnnotation()
+            }
+            .onChange(of: textSize) {
+                updateSelectedAnnotation()
+            }
+            .onChange(of: annotationText) {
+                updateSelectedAnnotation()
+            }
 
             HStack {
                 Text(statusText)
@@ -77,6 +118,11 @@ struct ImageClipboardEditor: View {
                     dismiss()
                 }
 
+                Button("Delete Annotation") {
+                    deleteSelectedAnnotation()
+                }
+                .disabled(selectedAnnotationID == nil)
+
                 if !selectedTool.appliesLive {
                     Button(primaryActionTitle) {
                         applySelectedTool()
@@ -85,7 +131,7 @@ struct ImageClipboardEditor: View {
                 }
 
                 Button("Done") {
-                    saveAction(workingImageData)
+                    saveAction(rasterizedImageData() ?? workingImageData)
                     dismiss()
                 }
                 .buttonStyle(.borderedProminent)
@@ -107,11 +153,19 @@ struct ImageClipboardEditor: View {
                 .offset(x: selection.minX, y: selection.minY)
         case .rectangle:
             Rectangle()
+                .fill(fillsShape ? fillColor : Color.clear)
+                .stroke(annotationColor, lineWidth: CGFloat(lineWidth))
+                .frame(width: selection.width, height: selection.height)
+                .offset(x: selection.minX, y: selection.minY)
+        case .roundedRectangle:
+            RoundedRectangle(cornerRadius: min(14, min(selection.width, selection.height) / 4))
+                .fill(fillsShape ? fillColor : Color.clear)
                 .stroke(annotationColor, lineWidth: CGFloat(lineWidth))
                 .frame(width: selection.width, height: selection.height)
                 .offset(x: selection.minX, y: selection.minY)
         case .oval:
             Ellipse()
+                .fill(fillsShape ? fillColor : Color.clear)
                 .stroke(annotationColor, lineWidth: CGFloat(lineWidth))
                 .frame(width: selection.width, height: selection.height)
                 .offset(x: selection.minX, y: selection.minY)
@@ -126,9 +180,11 @@ struct ImageClipboardEditor: View {
                 .fill(annotationColor.opacity(0.35))
                 .frame(width: selection.width, height: selection.height)
                 .offset(x: selection.minX, y: selection.minY)
+        case .freehand:
+            EmptyView()
         case .text:
             Text(annotationText.isEmpty ? "Text" : annotationText)
-                .font(.system(size: 24, weight: .semibold))
+                .font(.system(size: textSize, weight: .semibold))
                 .foregroundStyle(annotationColor)
                 .frame(width: selection.width, height: selection.height, alignment: .topLeading)
                 .offset(x: selection.minX, y: selection.minY)
@@ -174,13 +230,101 @@ struct ImageClipboardEditor: View {
         }
     }
 
+    private struct FreehandShape: Shape {
+        let points: [CGPoint]
+
+        func path(in rect: CGRect) -> Path {
+            var path = Path()
+            guard let first = points.first else {
+                return path
+            }
+
+            path.move(to: first)
+            for point in points.dropFirst() {
+                path.addLine(to: point)
+            }
+            return path
+        }
+    }
+
+    @ViewBuilder
+    private func annotationView(_ annotation: ImageAnnotation, in imageRect: CGRect) -> some View {
+        let displayScale = pixelScale(for: imageRect)
+        let displayRect = annotation.displayRect(in: imageRect)
+        let strokeWidth = max(1, annotation.lineWidth / displayScale)
+        let strokeColor = Color(nsColor: annotation.color)
+        let fillColor = annotation.fillColor.map(Color.init(nsColor:)) ?? Color.clear
+
+        ZStack(alignment: .topLeading) {
+            switch annotation.tool {
+            case .rectangle:
+                Rectangle()
+                    .fill(fillColor)
+                    .stroke(strokeColor, lineWidth: strokeWidth)
+                    .frame(width: displayRect.width, height: displayRect.height)
+                    .offset(x: displayRect.minX, y: displayRect.minY)
+            case .roundedRectangle:
+                RoundedRectangle(cornerRadius: min(14, min(displayRect.width, displayRect.height) / 4))
+                    .fill(fillColor)
+                    .stroke(strokeColor, lineWidth: strokeWidth)
+                    .frame(width: displayRect.width, height: displayRect.height)
+                    .offset(x: displayRect.minX, y: displayRect.minY)
+            case .oval:
+                Ellipse()
+                    .fill(fillColor)
+                    .stroke(strokeColor, lineWidth: strokeWidth)
+                    .frame(width: displayRect.width, height: displayRect.height)
+                    .offset(x: displayRect.minX, y: displayRect.minY)
+            case .line:
+                LineShape(
+                    start: annotation.start.displayPoint(in: imageRect),
+                    end: annotation.end.displayPoint(in: imageRect)
+                )
+                .stroke(strokeColor, style: StrokeStyle(lineWidth: strokeWidth, lineCap: .round))
+            case .arrow:
+                ArrowShape(
+                    start: annotation.start.displayPoint(in: imageRect),
+                    end: annotation.end.displayPoint(in: imageRect)
+                )
+                .stroke(strokeColor, style: StrokeStyle(lineWidth: strokeWidth, lineCap: .round, lineJoin: .round))
+            case .highlight:
+                Rectangle()
+                    .fill(strokeColor.opacity(0.35))
+                    .frame(width: displayRect.width, height: displayRect.height)
+                    .offset(x: displayRect.minX, y: displayRect.minY)
+            case .freehand:
+                FreehandShape(points: annotation.points.map { $0.displayPoint(in: imageRect) })
+                    .stroke(strokeColor, style: StrokeStyle(lineWidth: strokeWidth, lineCap: .round, lineJoin: .round))
+            case .text:
+                Text(annotation.text.isEmpty ? "Text" : annotation.text)
+                    .font(.system(size: max(10, annotation.textSize / displayScale), weight: .semibold))
+                    .foregroundStyle(strokeColor)
+                    .frame(width: displayRect.width, height: displayRect.height, alignment: .topLeading)
+                    .offset(x: displayRect.minX, y: displayRect.minY)
+            case .crop, .redact:
+                EmptyView()
+            }
+
+            if selectedAnnotationID == annotation.id {
+                Rectangle()
+                    .stroke(.tint, style: StrokeStyle(lineWidth: 1.5, dash: [5, 3]))
+                    .frame(width: displayRect.width, height: displayRect.height)
+                    .offset(x: displayRect.minX, y: displayRect.minY)
+            }
+        }
+    }
+
     private var hasUsableSelection: Bool {
         selection.width >= 4 && selection.height >= 4
     }
 
     private var canApplySelectedTool: Bool {
-        guard hasUsableSelection || selectedTool == .text else {
+        guard hasUsableSelection || selectedTool == .text || selectedTool == .freehand else {
             return false
+        }
+
+        if selectedTool == .freehand {
+            return normalizedFreehandPoints.count > 1
         }
 
         if selectedTool == .text {
@@ -196,6 +340,10 @@ struct ImageClipboardEditor: View {
             return annotationText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 ? "Type annotation text, then click or drag on the image to place it."
                 : "Click or drag on the image to place the text."
+        }
+
+        if selectedTool == .freehand {
+            return "Drag on the image to sketch."
         }
 
         if selectedTool.appliesLive {
@@ -217,19 +365,72 @@ struct ImageClipboardEditor: View {
     }
 
     private var toolControls: some View {
-        VStack(spacing: 10) {
-            HStack(spacing: 12) {
-                Picker("Tool", selection: $selectedTool) {
-                    ForEach(ClipboardImageEditing.Tool.allCases) { tool in
-                        Label(tool.title, systemImage: tool.systemImageName)
-                            .tag(tool)
-                    }
-                }
-                .pickerStyle(.segmented)
+        VStack(spacing: 8) {
+            HStack(spacing: 8) {
+                toolButton(.crop)
+                toolButton(.redact)
+                Divider().frame(height: 24)
+                toolButton(.freehand)
+                toolButton(.line)
+                toolButton(.arrow)
 
-                ColorPicker("Color", selection: $annotationColor, supportsOpacity: true)
+                Menu {
+                    toolMenuButton(.rectangle)
+                    toolMenuButton(.roundedRectangle)
+                    toolMenuButton(.oval)
+                } label: {
+                    Label("Shapes", systemImage: "square.on.circle")
+                        .labelStyle(.iconOnly)
+                }
+                .help("Shapes")
+
+                toolButton(.highlight)
+                toolButton(.text)
+
+                Divider().frame(height: 24)
+                transformButton("Rotate Left", systemImage: "rotate.left") {
+                    apply(.rotateLeft)
+                }
+                transformButton("Rotate Right", systemImage: "rotate.right") {
+                    apply(.rotateRight)
+                }
+                transformButton("Flip Horizontal", systemImage: "flip.horizontal") {
+                    apply(.flipHorizontal)
+                }
+                transformButton("Flip Vertical", systemImage: "flip.vertical") {
+                    apply(.flipVertical)
+                }
+
+                Spacer()
+
+                Menu {
+                    ForEach([1.0, 3.0, 5.0, 8.0, 12.0, 18.0], id: \.self) { width in
+                        Button("\(Int(width)) px") {
+                            lineWidth = width
+                        }
+                    }
+                } label: {
+                    Label("Stroke Width", systemImage: "line.3.horizontal")
+                        .labelStyle(.iconOnly)
+                }
+                .disabled(!selectedTool.usesLineWidth)
+                .help("Stroke Width")
+
+                ColorPicker("Stroke Color", selection: $annotationColor, supportsOpacity: true)
                     .labelsHidden()
                     .disabled(!selectedTool.usesColor)
+
+                Toggle(isOn: $fillsShape) {
+                    Label("Fill", systemImage: "paintbucket")
+                }
+                .toggleStyle(.button)
+                .labelStyle(.iconOnly)
+                .disabled(!selectedTool.usesFill)
+                .help("Fill Shape")
+
+                ColorPicker("Fill Color", selection: $fillColor, supportsOpacity: true)
+                    .labelsHidden()
+                    .disabled(!selectedTool.usesFill || !fillsShape)
             }
 
             HStack(spacing: 12) {
@@ -243,6 +444,9 @@ struct ImageClipboardEditor: View {
                     .foregroundStyle(.secondary)
                     .frame(width: 44, alignment: .trailing)
 
+                Stepper("Text \(Int(textSize)) pt", value: $textSize, in: 10...96, step: 1)
+                    .disabled(selectedTool != .text)
+
                 TextField("Annotation text", text: $annotationText)
                     .textFieldStyle(.roundedBorder)
                     .disabled(selectedTool != .text)
@@ -252,6 +456,42 @@ struct ImageClipboardEditor: View {
                     }
             }
         }
+    }
+
+    private func toolButton(_ tool: ClipboardImageEditing.Tool) -> some View {
+        Button {
+            selectedTool = tool
+        } label: {
+            Label(tool.title, systemImage: tool.systemImageName)
+                .labelStyle(.iconOnly)
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.regular)
+        .help(tool.title)
+        .tint(selectedTool == tool ? .accentColor : nil)
+    }
+
+    private func toolMenuButton(_ tool: ClipboardImageEditing.Tool) -> some View {
+        Button {
+            selectedTool = tool
+        } label: {
+            Label(tool.title, systemImage: tool.systemImageName)
+        }
+    }
+
+    private func transformButton(
+        _ title: String,
+        systemImage: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Label(title, systemImage: systemImage)
+                .labelStyle(.iconOnly)
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.regular)
+        .help(title)
+        .disabled(workingImageData.isEmpty)
     }
 
     private func fittedImageRect(in size: CGSize) -> CGRect {
@@ -285,10 +525,20 @@ struct ImageClipboardEditor: View {
                 }
                 let point = clamped(value.location, to: imageRect)
                 let start = dragStart ?? point
+                if dragStart == nil {
+                    freehandPoints = selectedTool == .freehand ? [start] : []
+                    normalizedFreehandPoints = selectedTool == .freehand
+                        ? [normalized(point: start, in: imageRect)]
+                        : []
+                }
                 dragStart = start
                 displayToPixelScale = pixelScale(for: imageRect)
                 selectionStart = start
                 selectionEnd = point
+                if selectedTool == .freehand {
+                    freehandPoints.append(point)
+                    normalizedFreehandPoints.append(normalized(point: point, in: imageRect))
+                }
                 selection = CGRect(
                     x: min(start.x, point.x),
                     y: min(start.y, point.y),
@@ -361,28 +611,135 @@ struct ImageClipboardEditor: View {
     }
 
     private func applySelectedTool() {
-        apply(
-            selectedTool.operation(
-                color: NSColor(annotationColor),
-                lineWidth: CGFloat(lineWidth),
-                text: annotationText,
-                start: normalizedSelectionStart,
-                end: normalizedSelectionEnd,
-                displayScale: displayToPixelScale
+        if selectedTool.appliesLive {
+            addAnnotation()
+        } else {
+            applyDestructive(
+                selectedTool.operation(
+                    color: NSColor(annotationColor),
+                    fillColor: fillsShape ? NSColor(fillColor) : nil,
+                    lineWidth: CGFloat(lineWidth),
+                    text: annotationText,
+                    textSize: CGFloat(textSize),
+                    start: normalizedSelectionStart,
+                    end: normalizedSelectionEnd,
+                    points: normalizedFreehandPoints,
+                    displayScale: displayToPixelScale
+                )
             )
-        )
+        }
     }
 
     private func apply(_ operation: ClipboardImageEditing.Operation) {
+        applyDestructive(operation)
+    }
+
+    private func applyDestructive(_ operation: ClipboardImageEditing.Operation) {
+        let sourceData = rasterizedImageData() ?? workingImageData
         guard let editedData = ClipboardImageEditing.edit(
-                workingImageData,
+                sourceData,
                 normalizedSelection: normalizedSelection,
                 operation: operation
               ) else {
             return
         }
         workingImageData = editedData
+        annotations = []
+        selectedAnnotationID = nil
         clearSelection()
+    }
+
+    private func addAnnotation() {
+        let text = annotationText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard selectedTool != .text || !text.isEmpty else {
+            return
+        }
+
+        let annotation = ImageAnnotation(
+            tool: selectedTool,
+            normalizedSelection: normalizedSelection,
+            start: normalizedSelectionStart,
+            end: normalizedSelectionEnd,
+            points: normalizedFreehandPoints,
+            color: NSColor(annotationColor),
+            fillColor: fillsShape ? NSColor(fillColor) : nil,
+            lineWidth: max(1, CGFloat(lineWidth) * displayToPixelScale),
+            text: annotationText,
+            textSize: max(10, CGFloat(textSize) * displayToPixelScale),
+            displayScale: max(displayToPixelScale, 1)
+        )
+        annotations.append(annotation)
+        selectedAnnotationID = annotation.id
+        clearSelection()
+    }
+
+    private func rasterizedImageData() -> Data? {
+        guard !annotations.isEmpty else {
+            return workingImageData
+        }
+
+        var data = workingImageData
+        for annotation in annotations {
+            guard let editedData = ClipboardImageEditing.edit(
+                data,
+                normalizedSelection: annotation.normalizedSelection,
+                operation: annotation.operation
+            ) else {
+                continue
+            }
+            data = editedData
+        }
+        return data
+    }
+
+    private func select(_ annotation: ImageAnnotation) {
+        selectedAnnotationID = annotation.id
+        selectedTool = annotation.tool
+    }
+
+    private func loadSelectedAnnotationControls() {
+        guard let annotation = selectedAnnotation else {
+            return
+        }
+
+        annotationColor = Color(nsColor: annotation.color)
+        if let annotationFillColor = annotation.fillColor {
+            fillColor = Color(nsColor: annotationFillColor)
+            fillsShape = true
+        } else {
+            fillsShape = false
+        }
+        lineWidth = Double(max(1, annotation.lineWidth / annotation.displayScale))
+        textSize = Double(max(10, annotation.textSize / annotation.displayScale))
+        annotationText = annotation.text
+    }
+
+    private var selectedAnnotation: ImageAnnotation? {
+        guard let selectedAnnotationID else {
+            return nil
+        }
+        return annotations.first { $0.id == selectedAnnotationID }
+    }
+
+    private func updateSelectedAnnotation() {
+        guard let selectedAnnotationID,
+              let index = annotations.firstIndex(where: { $0.id == selectedAnnotationID }) else {
+            return
+        }
+
+        annotations[index].color = NSColor(annotationColor)
+        annotations[index].fillColor = fillsShape ? NSColor(fillColor) : nil
+        annotations[index].lineWidth = max(1, CGFloat(lineWidth) * annotations[index].displayScale)
+        annotations[index].textSize = max(10, CGFloat(textSize) * annotations[index].displayScale)
+        annotations[index].text = annotationText
+    }
+
+    private func deleteSelectedAnnotation() {
+        guard let selectedAnnotationID else {
+            return
+        }
+        annotations.removeAll { $0.id == selectedAnnotationID }
+        self.selectedAnnotationID = nil
     }
 
     private func clearSelection() {
@@ -392,6 +749,8 @@ struct ImageClipboardEditor: View {
         selectionEnd = .zero
         normalizedSelectionStart = .zero
         normalizedSelectionEnd = .zero
+        freehandPoints = []
+        normalizedFreehandPoints = []
         displayToPixelScale = 1
     }
 
@@ -421,15 +780,76 @@ private extension CGRect {
     }
 }
 
+private extension CGPoint {
+    func displayPoint(in imageRect: CGRect) -> CGPoint {
+        CGPoint(
+            x: imageRect.minX + x * imageRect.width,
+            y: imageRect.minY + y * imageRect.height
+        )
+    }
+}
+
+private struct ImageAnnotation: Identifiable {
+    let id = UUID()
+    var tool: ClipboardImageEditing.Tool
+    var normalizedSelection: CGRect
+    var start: CGPoint
+    var end: CGPoint
+    var points: [CGPoint]
+    var color: NSColor
+    var fillColor: NSColor?
+    var lineWidth: CGFloat
+    var text: String
+    var textSize: CGFloat
+    var displayScale: CGFloat
+
+    var operation: ClipboardImageEditing.Operation {
+        switch tool {
+        case .rectangle:
+            return .rectangle(color: color.cgColor, fillColor: fillColor?.cgColor, lineWidth: lineWidth)
+        case .roundedRectangle:
+            return .roundedRectangle(color: color.cgColor, fillColor: fillColor?.cgColor, lineWidth: lineWidth)
+        case .oval:
+            return .oval(color: color.cgColor, fillColor: fillColor?.cgColor, lineWidth: lineWidth)
+        case .line:
+            return .line(color: color.cgColor, lineWidth: lineWidth, start: start, end: end)
+        case .arrow:
+            return .arrow(color: color.cgColor, lineWidth: lineWidth, start: start, end: end)
+        case .highlight:
+            return .highlight(color: color.cgColor)
+        case .freehand:
+            return .freehand(color: color.cgColor, lineWidth: lineWidth, points: points)
+        case .text:
+            return .text(text, color: color.cgColor, fontSize: textSize)
+        case .crop:
+            return .crop
+        case .redact:
+            return .redact
+        }
+    }
+
+    func displayRect(in imageRect: CGRect) -> CGRect {
+        let rect = normalizedSelection.standardized
+        return CGRect(
+            x: imageRect.minX + rect.minX * imageRect.width,
+            y: imageRect.minY + rect.minY * imageRect.height,
+            width: rect.width * imageRect.width,
+            height: rect.height * imageRect.height
+        )
+    }
+}
+
 enum ClipboardImageEditing {
     enum Tool: String, CaseIterable, Identifiable {
         case crop
         case redact
         case rectangle
+        case roundedRectangle
         case oval
         case line
         case arrow
         case highlight
+        case freehand
         case text
 
         var id: String {
@@ -444,6 +864,8 @@ enum ClipboardImageEditing {
                 return "Redact"
             case .rectangle:
                 return "Rectangle"
+            case .roundedRectangle:
+                return "Rounded Rectangle"
             case .oval:
                 return "Oval"
             case .line:
@@ -452,6 +874,8 @@ enum ClipboardImageEditing {
                 return "Arrow"
             case .highlight:
                 return "Highlight"
+            case .freehand:
+                return "Sketch"
             case .text:
                 return "Text"
             }
@@ -465,6 +889,8 @@ enum ClipboardImageEditing {
                 return "rectangle.fill"
             case .rectangle:
                 return "rectangle"
+            case .roundedRectangle:
+                return "roundedrectangle"
             case .oval:
                 return "oval"
             case .line:
@@ -473,6 +899,8 @@ enum ClipboardImageEditing {
                 return "arrow.up.right"
             case .highlight:
                 return "highlighter"
+            case .freehand:
+                return "pencil.and.scribble"
             case .text:
                 return "textformat"
             }
@@ -482,7 +910,7 @@ enum ClipboardImageEditing {
             switch self {
             case .crop, .redact:
                 return false
-            case .rectangle, .oval, .line, .arrow, .highlight, .text:
+            case .rectangle, .roundedRectangle, .oval, .line, .arrow, .highlight, .freehand, .text:
                 return true
             }
         }
@@ -491,8 +919,17 @@ enum ClipboardImageEditing {
             switch self {
             case .crop, .redact, .highlight, .text:
                 return false
-            case .rectangle, .oval, .line, .arrow:
+            case .rectangle, .roundedRectangle, .oval, .line, .arrow, .freehand:
                 return true
+            }
+        }
+
+        var usesFill: Bool {
+            switch self {
+            case .rectangle, .roundedRectangle, .oval:
+                return true
+            case .crop, .redact, .line, .arrow, .highlight, .freehand, .text:
+                return false
             }
         }
 
@@ -500,36 +937,55 @@ enum ClipboardImageEditing {
             switch self {
             case .crop, .redact:
                 return false
-            case .rectangle, .oval, .line, .arrow, .highlight, .text:
+            case .rectangle, .roundedRectangle, .oval, .line, .arrow, .highlight, .freehand, .text:
                 return true
             }
         }
 
         func operation(
             color: NSColor,
+            fillColor: NSColor?,
             lineWidth: CGFloat,
             text: String,
+            textSize: CGFloat,
             start: CGPoint,
             end: CGPoint,
+            points: [CGPoint],
             displayScale: CGFloat
         ) -> Operation {
             let scaledLineWidth = max(1, lineWidth * displayScale)
-            let scaledFontSize = max(10, 24 * displayScale)
+            let scaledFontSize = max(10, textSize * displayScale)
             switch self {
             case .crop:
                 return .crop
             case .redact:
                 return .redact
             case .rectangle:
-                return .rectangle(color: color.cgColor, lineWidth: scaledLineWidth)
+                return .rectangle(
+                    color: color.cgColor,
+                    fillColor: fillColor?.cgColor,
+                    lineWidth: scaledLineWidth
+                )
+            case .roundedRectangle:
+                return .roundedRectangle(
+                    color: color.cgColor,
+                    fillColor: fillColor?.cgColor,
+                    lineWidth: scaledLineWidth
+                )
             case .oval:
-                return .oval(color: color.cgColor, lineWidth: scaledLineWidth)
+                return .oval(
+                    color: color.cgColor,
+                    fillColor: fillColor?.cgColor,
+                    lineWidth: scaledLineWidth
+                )
             case .line:
                 return .line(color: color.cgColor, lineWidth: scaledLineWidth, start: start, end: end)
             case .arrow:
                 return .arrow(color: color.cgColor, lineWidth: scaledLineWidth, start: start, end: end)
             case .highlight:
                 return .highlight(color: color.cgColor)
+            case .freehand:
+                return .freehand(color: color.cgColor, lineWidth: scaledLineWidth, points: points)
             case .text:
                 return .text(text, color: color.cgColor, fontSize: scaledFontSize)
             }
@@ -540,12 +996,18 @@ enum ClipboardImageEditing {
         case crop
         case redact
         case outline
-        case rectangle(color: CGColor, lineWidth: CGFloat)
-        case oval(color: CGColor, lineWidth: CGFloat)
+        case rectangle(color: CGColor, fillColor: CGColor?, lineWidth: CGFloat)
+        case roundedRectangle(color: CGColor, fillColor: CGColor?, lineWidth: CGFloat)
+        case oval(color: CGColor, fillColor: CGColor?, lineWidth: CGFloat)
         case line(color: CGColor, lineWidth: CGFloat, start: CGPoint, end: CGPoint)
         case arrow(color: CGColor, lineWidth: CGFloat, start: CGPoint, end: CGPoint)
         case highlight(color: CGColor)
+        case freehand(color: CGColor, lineWidth: CGFloat, points: [CGPoint])
         case text(String, color: CGColor, fontSize: CGFloat)
+        case rotateLeft
+        case rotateRight
+        case flipHorizontal
+        case flipVertical
     }
 
     static func edit(
@@ -558,33 +1020,62 @@ enum ClipboardImageEditing {
             return nil
         }
 
-        let selection = normalizedSelection.standardized.intersection(
-            CGRect(x: 0, y: 0, width: 1, height: 1)
-        )
-        guard selection.width > 0, selection.height > 0 else {
-            return nil
-        }
-
         let result: CGImage?
         switch operation {
+        case .rotateLeft:
+            result = rotated(image, clockwise: false)
+        case .rotateRight:
+            result = rotated(image, clockwise: true)
+        case .flipHorizontal:
+            result = flipped(image, horizontally: true)
+        case .flipVertical:
+            result = flipped(image, horizontally: false)
         case .crop:
+            guard let selection = usableSelection(normalizedSelection) else {
+                return nil
+            }
             result = image.cropping(to: pixelRect(for: selection, in: image, origin: .topLeft))
         case .redact:
+            guard let selection = usableSelection(normalizedSelection) else {
+                return nil
+            }
             result = redacted(image, pixelRect: pixelRect(for: selection, in: image, origin: .bottomLeft))
         case .outline:
+            guard let selection = usableSelection(normalizedSelection) else {
+                return nil
+            }
             result = outlined(image, pixelRect: pixelRect(for: selection, in: image, origin: .bottomLeft))
-        case .rectangle(let color, let lineWidth):
+        case .rectangle(let color, let fillColor, let lineWidth):
+            guard let selection = usableSelection(normalizedSelection) else {
+                return nil
+            }
             result = strokedRectangle(
                 image,
                 pixelRect: pixelRect(for: selection, in: image, origin: .bottomLeft),
                 color: color,
+                fillColor: fillColor,
                 lineWidth: lineWidth
             )
-        case .oval(let color, let lineWidth):
+        case .roundedRectangle(let color, let fillColor, let lineWidth):
+            guard let selection = usableSelection(normalizedSelection) else {
+                return nil
+            }
+            result = strokedRoundedRectangle(
+                image,
+                pixelRect: pixelRect(for: selection, in: image, origin: .bottomLeft),
+                color: color,
+                fillColor: fillColor,
+                lineWidth: lineWidth
+            )
+        case .oval(let color, let fillColor, let lineWidth):
+            guard let selection = usableSelection(normalizedSelection) else {
+                return nil
+            }
             result = strokedOval(
                 image,
                 pixelRect: pixelRect(for: selection, in: image, origin: .bottomLeft),
                 color: color,
+                fillColor: fillColor,
                 lineWidth: lineWidth
             )
         case .line(let color, let lineWidth, let start, let end):
@@ -606,12 +1097,25 @@ enum ClipboardImageEditing {
                 drawsArrow: true
             )
         case .highlight(let color):
+            guard let selection = usableSelection(normalizedSelection) else {
+                return nil
+            }
             result = highlighted(
                 image,
                 pixelRect: pixelRect(for: selection, in: image, origin: .bottomLeft),
                 color: color
             )
+        case .freehand(let color, let lineWidth, let points):
+            result = freehand(
+                image,
+                points: points.map { pixelPoint(for: $0, in: image, origin: .bottomLeft) },
+                color: color,
+                lineWidth: lineWidth
+            )
         case .text(let text, let color, let fontSize):
+            guard let selection = usableSelection(normalizedSelection) else {
+                return nil
+            }
             result = textAnnotation(
                 image,
                 pixelRect: pixelRect(for: selection, in: image, origin: .bottomLeft),
@@ -621,6 +1125,13 @@ enum ClipboardImageEditing {
             )
         }
         return result.flatMap(encodedPNGData)
+    }
+
+    private static func usableSelection(_ normalizedSelection: CGRect) -> CGRect? {
+        let selection = normalizedSelection.standardized.intersection(
+            CGRect(x: 0, y: 0, width: 1, height: 1)
+        )
+        return selection.width > 0 && selection.height > 0 ? selection : nil
     }
 
     static func pngData(from image: NSImage) -> Data? {
@@ -651,11 +1162,62 @@ enum ClipboardImageEditing {
         }
     }
 
+    private static func rotated(_ image: CGImage, clockwise: Bool) -> CGImage? {
+        let outputWidth = image.height
+        let outputHeight = image.width
+        guard let context = CGContext(
+            data: nil,
+            width: outputWidth,
+            height: outputHeight,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else {
+            return nil
+        }
+
+        if clockwise {
+            context.translateBy(x: CGFloat(outputWidth), y: 0)
+            context.rotate(by: .pi / 2)
+        } else {
+            context.translateBy(x: 0, y: CGFloat(outputHeight))
+            context.rotate(by: -.pi / 2)
+        }
+        context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+        return context.makeImage()
+    }
+
+    private static func flipped(_ image: CGImage, horizontally: Bool) -> CGImage? {
+        guard let context = CGContext(
+            data: nil,
+            width: image.width,
+            height: image.height,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else {
+            return nil
+        }
+
+        if horizontally {
+            context.translateBy(x: CGFloat(image.width), y: 0)
+            context.scaleBy(x: -1, y: 1)
+        } else {
+            context.translateBy(x: 0, y: CGFloat(image.height))
+            context.scaleBy(x: 1, y: -1)
+        }
+        context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+        return context.makeImage()
+    }
+
     private static func outlined(_ image: CGImage, pixelRect: CGRect) -> CGImage? {
         strokedRectangle(
             image,
             pixelRect: pixelRect,
             color: CGColor(red: 1, green: 0.15, blue: 0.1, alpha: 1),
+            fillColor: nil,
             lineWidth: max(3, CGFloat(image.width) / 300)
         )
     }
@@ -664,12 +1226,43 @@ enum ClipboardImageEditing {
         _ image: CGImage,
         pixelRect: CGRect,
         color: CGColor,
+        fillColor: CGColor?,
         lineWidth: CGFloat
     ) -> CGImage? {
         editedImage(image) { context in
+            if let fillColor {
+                context.setFillColor(fillColor)
+                context.fill(pixelRect)
+            }
             configureStroke(context, color: color, lineWidth: lineWidth)
             let inset = max(1, lineWidth / 2)
             context.stroke(pixelRect.insetBy(dx: inset, dy: inset))
+        }
+    }
+
+    private static func strokedRoundedRectangle(
+        _ image: CGImage,
+        pixelRect: CGRect,
+        color: CGColor,
+        fillColor: CGColor?,
+        lineWidth: CGFloat
+    ) -> CGImage? {
+        editedImage(image) { context in
+            let cornerRadius = min(pixelRect.width, pixelRect.height) * 0.16
+            let rectPath = CGPath(
+                roundedRect: pixelRect,
+                cornerWidth: cornerRadius,
+                cornerHeight: cornerRadius,
+                transform: nil
+            )
+            if let fillColor {
+                context.setFillColor(fillColor)
+                context.addPath(rectPath)
+                context.fillPath()
+            }
+            configureStroke(context, color: color, lineWidth: lineWidth)
+            context.addPath(rectPath)
+            context.strokePath()
         }
     }
 
@@ -677,12 +1270,37 @@ enum ClipboardImageEditing {
         _ image: CGImage,
         pixelRect: CGRect,
         color: CGColor,
+        fillColor: CGColor?,
         lineWidth: CGFloat
     ) -> CGImage? {
         editedImage(image) { context in
+            if let fillColor {
+                context.setFillColor(fillColor)
+                context.fillEllipse(in: pixelRect)
+            }
             configureStroke(context, color: color, lineWidth: lineWidth)
             let inset = max(1, lineWidth / 2)
             context.strokeEllipse(in: pixelRect.insetBy(dx: inset, dy: inset))
+        }
+    }
+
+    private static func freehand(
+        _ image: CGImage,
+        points: [CGPoint],
+        color: CGColor,
+        lineWidth: CGFloat
+    ) -> CGImage? {
+        guard let first = points.first, points.count > 1 else {
+            return nil
+        }
+
+        return editedImage(image) { context in
+            configureStroke(context, color: color, lineWidth: lineWidth)
+            context.move(to: first)
+            for point in points.dropFirst() {
+                context.addLine(to: point)
+            }
+            context.strokePath()
         }
     }
 

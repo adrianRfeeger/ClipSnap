@@ -43,30 +43,55 @@ struct MenuBarHistoryMenu: View {
             Button("Text from Region") {
                 screenCaptureService.capture(.ocrRegion)
             }
+            .disabled(screenCaptureService.isCapturing)
 
             Button("Region") {
                 screenCaptureService.capture(.region)
             }
+            .disabled(screenCaptureService.isCapturing)
 
             Button("Window") {
                 screenCaptureService.capture(.window)
             }
+            .disabled(screenCaptureService.isCapturing)
 
             Button("Application") {
                 screenCaptureService.capture(.application)
             }
+            .disabled(screenCaptureService.isCapturing)
 
             Button("Display") {
                 screenCaptureService.capture(.display)
             }
+            .disabled(screenCaptureService.isCapturing)
 
             Divider()
 
             Button("Record Display") {
                 screenCaptureService.capture(.recording)
             }
+            .disabled(screenCaptureService.isCapturing)
+
+            Button("Pause Recording") {
+                screenCaptureService.pauseRecording()
+            }
+            .disabled(!screenCaptureService.isRecording || screenCaptureService.isRecordingPaused)
+
+            Button("Continue Recording") {
+                screenCaptureService.resumeRecording()
+            }
+            .disabled(!screenCaptureService.isRecordingPaused)
+
+            Button("Stop Recording") {
+                screenCaptureService.stopRecording()
+            }
+            .disabled(!screenCaptureService.isRecording && !screenCaptureService.isRecordingPaused)
+
+            Button("Cancel Recording") {
+                screenCaptureService.cancelRecording()
+            }
+            .disabled(!screenCaptureService.isRecording && !screenCaptureService.isRecordingPaused)
         }
-        .disabled(screenCaptureService.isCapturing)
 
         Label(cloudSyncMonitor.state.title, systemImage: cloudSyncMonitor.state.systemImageName)
 

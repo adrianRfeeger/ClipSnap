@@ -198,7 +198,8 @@ final class ClipboardMonitor: ObservableObject {
     @discardableResult
     func importScreenRecording(
         _ data: Data,
-        sourceDescription: String
+        sourceDescription: String,
+        utiType: String = UTType.mpeg4Movie.identifier
     ) -> String? {
         guard !data.isEmpty else {
             logger.error("Failed to import empty screen recording")
@@ -210,7 +211,7 @@ final class ClipboardMonitor: ObservableObject {
             type: ClipboardItemType.video,
             previewText: sourceDescription,
             rawData: data,
-            utiType: UTType.mpeg4Movie.identifier,
+            utiType: utiType,
             sourceApp: "Screen Recording",
             sourceBundleIdentifier: Bundle.main.bundleIdentifier
         )
@@ -533,10 +534,12 @@ final class ClipboardMonitor: ObservableObject {
         }
 
         if let htmlData = pasteboard.data(forType: .html) {
+            let htmlContent = htmlClipboardContent(from: htmlData)
             return ClipboardItem.make(
                 in: context,
-                type: ClipboardItemType.html,
-                previewText: stringPreview(from: htmlData) ?? "HTML",
+                type: htmlContent.itemType,
+                plainText: htmlContent.plainText,
+                previewText: htmlContent.previewText,
                 rawData: htmlData,
                 utiType: NSPasteboard.PasteboardType.html.rawValue
             )
@@ -748,6 +751,7 @@ final class ClipboardMonitor: ObservableObject {
             || itemType == ClipboardItemType.sourceCode
             || itemType == ClipboardItemType.tabularText
             || itemType == ClipboardItemType.contact
+            || itemType == ClipboardItemType.html
             || itemType == ClipboardItemType.text else {
             return nil
         }
@@ -772,6 +776,101 @@ final class ClipboardMonitor: ObservableObject {
 
         return attributedString.string.clipboardPreview
     }
+
+    private func htmlClipboardContent(from data: Data) -> HTMLClipboardContent {
+        let htmlString = stringPreview(from: data) ?? ""
+        let extractedText = htmlPlainText(from: data, htmlString: htmlString)
+        let trimmedText = extractedText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let rawPreview = htmlString.clipboardPreview
+
+        if shouldTreatAsFormattedText(html: htmlString, extractedText: trimmedText) {
+            let preview = trimmedText.isEmpty ? rawPreview : trimmedText.clipboardPreview
+            return HTMLClipboardContent(
+                itemType: ClipboardItemType.html,
+                plainText: trimmedText.isEmpty ? nil : trimmedText,
+                previewText: preview.isEmpty ? "HTML formatted text" : preview
+            )
+        }
+
+        return HTMLClipboardContent(
+            itemType: ClipboardItemType.html,
+            plainText: nil,
+            previewText: rawPreview.isEmpty ? "HTML" : rawPreview
+        )
+    }
+
+    private func htmlPlainText(from data: Data, htmlString: String) -> String {
+        if let attributedString = try? NSAttributedString(
+            data: data,
+            options: [
+                .documentType: NSAttributedString.DocumentType.html,
+                .characterEncoding: String.Encoding.utf8.rawValue
+            ],
+            documentAttributes: nil
+        ) {
+            let text = attributedString.string.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !text.isEmpty {
+                return text
+            }
+        }
+
+        return strippedHTMLText(from: htmlString)
+    }
+
+    private func strippedHTMLText(from htmlString: String) -> String {
+        var text = htmlString
+        text = text.replacingOccurrences(
+            of: "(?is)<(script|style)\\b[^>]*>.*?</\\1>",
+            with: " ",
+            options: .regularExpression
+        )
+        text = text.replacingOccurrences(of: "(?i)<br\\s*/?>", with: "\n", options: .regularExpression)
+        text = text.replacingOccurrences(of: "(?i)</p\\s*>", with: "\n", options: .regularExpression)
+        text = text.replacingOccurrences(of: "<[^>]+>", with: " ", options: .regularExpression)
+        text = text.replacingOccurrences(of: "&nbsp;", with: " ")
+        text = text.replacingOccurrences(of: "&amp;", with: "&")
+        text = text.replacingOccurrences(of: "&lt;", with: "<")
+        text = text.replacingOccurrences(of: "&gt;", with: ">")
+        text = text.replacingOccurrences(of: "&quot;", with: "\"")
+        text = text.replacingOccurrences(of: "&#39;", with: "'")
+        return text
+            .components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+    }
+
+    private func shouldTreatAsFormattedText(html: String, extractedText: String) -> Bool {
+        guard !extractedText.isEmpty else {
+            return false
+        }
+
+        let lowercasedHTML = html.lowercased()
+        let hasDocumentStructure = lowercasedHTML.contains("<!doctype")
+            || lowercasedHTML.contains("<html")
+            || lowercasedHTML.contains("<head")
+            || lowercasedHTML.contains("<body")
+        let markupRatio = Double(html.count) / Double(max(extractedText.count, 1))
+        let isEscapedHTMLSource = lowercasedHTML.contains("&lt;html")
+            || lowercasedHTML.contains("&lt;body")
+            || lowercasedHTML.contains("&lt;div")
+            || lowercasedHTML.contains("&lt;span")
+
+        if isEscapedHTMLSource {
+            return false
+        }
+
+        if hasDocumentStructure && markupRatio > 8 {
+            return false
+        }
+
+        return true
+    }
+}
+
+private struct HTMLClipboardContent {
+    let itemType: String
+    let plainText: String?
+    let previewText: String
 }
 
 private extension NSImage {

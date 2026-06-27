@@ -22,6 +22,37 @@ enum ScreenCaptureSettingKey {
     static let includesChildWindows = "screenCaptureIncludesChildWindows"
     static let copiesAfterCapture = "screenCaptureCopiesAfterCapture"
     static let copiesOCRText = "screenCaptureCopiesOCRText"
+    static let recordingAudioMode = "screenCaptureRecordingAudioMode"
+}
+
+enum ScreenRecordingAudioMode: String, CaseIterable, Identifiable {
+    case none
+    case system
+    case microphone
+    case systemAndMicrophone
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .none:
+            return "No Audio"
+        case .system:
+            return "System Audio"
+        case .microphone:
+            return "Microphone"
+        case .systemAndMicrophone:
+            return "System Audio + Microphone"
+        }
+    }
+
+    var capturesSystemAudio: Bool {
+        self == .system || self == .systemAndMicrophone
+    }
+
+    var capturesMicrophone: Bool {
+        self == .microphone || self == .systemAndMicrophone
+    }
 }
 
 @MainActor
@@ -219,10 +250,13 @@ final class ScreenCaptureService: NSObject, ObservableObject {
 
     private func startRecording(filter: SCContentFilter) async {
         do {
-            let streamConfiguration = recordingStreamConfiguration(for: filter)
+            let audioMode = recordingAudioMode()
+            let streamConfiguration = recordingStreamConfiguration(for: filter, audioMode: audioMode)
             let session = ScreenRecordingSession(
                 filter: filter,
                 streamConfiguration: streamConfiguration,
+                outputFileType: recordingOutputFileType(),
+                videoCodecType: recordingVideoCodecType(),
                 sourceDescription: recordingSourceDescription(for: filter)
             )
             session.activeSegment = try await startRecordingSegment(for: session)
@@ -231,6 +265,33 @@ final class ScreenCaptureService: NSObject, ObservableObject {
             isRecordingPaused = false
             isCapturing = true
             statusText = "Recording desktop"
+            picker.isActive = false
+        } catch {
+            if recordingAudioMode() != .none {
+                await startRecordingWithoutAudio(filter: filter, originalError: error)
+            } else {
+                failCapture(error)
+            }
+        }
+    }
+
+    private func startRecordingWithoutAudio(filter: SCContentFilter, originalError: Error) async {
+        do {
+            let streamConfiguration = recordingStreamConfiguration(for: filter, audioMode: .none)
+            let session = ScreenRecordingSession(
+                filter: filter,
+                streamConfiguration: streamConfiguration,
+                outputFileType: recordingOutputFileType(),
+                videoCodecType: recordingVideoCodecType(),
+                sourceDescription: recordingSourceDescription(for: filter)
+            )
+            session.activeSegment = try await startRecordingSegment(for: session)
+            recordingSession = session
+            isRecording = true
+            isRecordingPaused = false
+            isCapturing = true
+            statusText = "Recording desktop"
+            errorMessage = "Audio capture could not start, so ClipSnap started a screen-only recording. \(originalError.localizedDescription)"
             picker.isActive = false
         } catch {
             failCapture(error)
@@ -271,8 +332,19 @@ final class ScreenCaptureService: NSObject, ObservableObject {
         }
     }
 
+    func cancelRecording() {
+        guard recordingSession != nil else {
+            cancelCapture()
+            return
+        }
+
+        captureTask = Task { [weak self] in
+            await self?.discardRecording()
+        }
+    }
+
     private func startRecordingSegment(for session: ScreenRecordingSession) async throws -> ScreenRecordingSegment {
-        let outputURL = recordingOutputURL()
+        let outputURL = recordingOutputURL(for: session.outputFileType)
         let stream = SCStream(
             filter: session.filter,
             configuration: session.streamConfiguration,
@@ -280,8 +352,8 @@ final class ScreenCaptureService: NSObject, ObservableObject {
         )
         let recordingConfiguration = SCRecordingOutputConfiguration()
         recordingConfiguration.outputURL = outputURL
-        recordingConfiguration.outputFileType = .mp4
-        recordingConfiguration.videoCodecType = .h264
+        recordingConfiguration.outputFileType = session.outputFileType
+        recordingConfiguration.videoCodecType = session.videoCodecType
 
         let delegate = ScreenRecordingOutputDelegate()
         let recordingOutput = SCRecordingOutput(
@@ -369,7 +441,8 @@ final class ScreenCaptureService: NSObject, ObservableObject {
 
             lastCapturedItemIdentifier = clipboardMonitor.importScreenRecording(
                 data,
-                sourceDescription: session.sourceDescription
+                sourceDescription: session.sourceDescription,
+                utiType: session.utiIdentifier
             )
             cleanUpRecordingFiles(for: session, keeping: outputURL)
             try? FileManager.default.removeItem(at: outputURL)
@@ -381,9 +454,38 @@ final class ScreenCaptureService: NSObject, ObservableObject {
         }
     }
 
-    private func recordingStreamConfiguration(for filter: SCContentFilter) -> SCStreamConfiguration {
+    private func discardRecording() async {
+        guard let session = recordingSession else {
+            isCapturing = false
+            isRecording = false
+            isRecordingPaused = false
+            statusText = nil
+            return
+        }
+
+        recordingSession = nil
+        isRecording = false
+        isRecordingPaused = false
+        statusText = "Cancelling recording…"
+        if let segment = session.activeSegment {
+            try? await segment.stream.stopCapture()
+            try? segment.stream.removeRecordingOutput(segment.recordingOutput)
+        }
+        cleanUpRecordingFiles(for: session)
+        isCapturing = false
+        statusText = nil
+    }
+
+    private func recordingStreamConfiguration(
+        for filter: SCContentFilter,
+        audioMode: ScreenRecordingAudioMode
+    ) -> SCStreamConfiguration {
         let configuration = SCStreamConfiguration()
-        configuration.capturesAudio = false
+        configuration.capturesAudio = audioMode.capturesSystemAudio
+        configuration.captureMicrophone = audioMode.capturesMicrophone
+        configuration.excludesCurrentProcessAudio = true
+        configuration.sampleRate = 48_000
+        configuration.channelCount = 2
         configuration.showsCursor = UserDefaults.standard.bool(forKey: ScreenCaptureSettingKey.showsCursor)
         configuration.minimumFrameInterval = CMTime(value: 1, timescale: 30)
         configuration.queueDepth = 5
@@ -392,10 +494,46 @@ final class ScreenCaptureService: NSObject, ObservableObject {
         return configuration
     }
 
-    private func recordingOutputURL() -> URL {
+    private func recordingAudioMode() -> ScreenRecordingAudioMode {
+        let rawValue = UserDefaults.standard.string(forKey: ScreenCaptureSettingKey.recordingAudioMode)
+            ?? ScreenRecordingAudioMode.none.rawValue
+        return ScreenRecordingAudioMode(rawValue: rawValue) ?? .none
+    }
+
+    private func recordingOutputFileType() -> AVFileType {
+        let configuration = SCRecordingOutputConfiguration()
+        if configuration.availableOutputFileTypes.contains(.mp4) {
+            return .mp4
+        }
+        if configuration.availableOutputFileTypes.contains(.mov) {
+            return .mov
+        }
+        return configuration.availableOutputFileTypes.first ?? .mp4
+    }
+
+    private func recordingVideoCodecType() -> AVVideoCodecType {
+        let configuration = SCRecordingOutputConfiguration()
+        if configuration.availableVideoCodecTypes.contains(.h264) {
+            return .h264
+        }
+        return configuration.availableVideoCodecTypes.first ?? .h264
+    }
+
+    private func recordingOutputURL(for fileType: AVFileType = .mp4) -> URL {
         FileManager.default.temporaryDirectory
             .appendingPathComponent("ClipSnap Recording \(UUID().uuidString)")
-            .appendingPathExtension("mp4")
+            .appendingPathExtension(fileExtension(for: fileType))
+    }
+
+    private func fileExtension(for fileType: AVFileType) -> String {
+        switch fileType {
+        case .mov:
+            return "mov"
+        case .mp4:
+            return "mp4"
+        default:
+            return UTType(fileType.rawValue)?.preferredFilenameExtension ?? "mov"
+        }
     }
 
     private func finalizedRecordingURL(for session: ScreenRecordingSession) async throws -> URL {
@@ -407,12 +545,20 @@ final class ScreenCaptureService: NSObject, ObservableObject {
             return session.segmentURLs[0]
         }
 
-        let outputURL = recordingOutputURL()
-        try await mergeRecordingSegments(session.segmentURLs, to: outputURL)
+        let outputURL = recordingOutputURL(for: session.outputFileType)
+        try await mergeRecordingSegments(
+            session.segmentURLs,
+            to: outputURL,
+            outputFileType: session.outputFileType
+        )
         return outputURL
     }
 
-    private func mergeRecordingSegments(_ segmentURLs: [URL], to outputURL: URL) async throws {
+    private func mergeRecordingSegments(
+        _ segmentURLs: [URL],
+        to outputURL: URL,
+        outputFileType: AVFileType
+    ) async throws {
         let composition = AVMutableComposition()
         guard let compositionTrack = composition.addMutableTrack(
             withMediaType: .video,
@@ -449,8 +595,8 @@ final class ScreenCaptureService: NSObject, ObservableObject {
         }
 
         exportSession.outputURL = outputURL
-        exportSession.outputFileType = .mp4
-        try await exportSession.export(to: outputURL, as: .mp4)
+        exportSession.outputFileType = outputFileType
+        try await exportSession.export(to: outputURL, as: outputFileType)
     }
 
     private func fileExistsAndIsNotEmpty(at url: URL) -> Bool {
@@ -664,17 +810,33 @@ private enum PickerPurpose {
 private final class ScreenRecordingSession {
     let filter: SCContentFilter
     let streamConfiguration: SCStreamConfiguration
+    let outputFileType: AVFileType
+    let videoCodecType: AVVideoCodecType
     let sourceDescription: String
     var activeSegment: ScreenRecordingSegment?
     var segmentURLs: [URL] = []
+    var utiIdentifier: String {
+        switch outputFileType {
+        case .mov:
+            return UTType.quickTimeMovie.identifier
+        case .mp4:
+            return UTType.mpeg4Movie.identifier
+        default:
+            return outputFileType.rawValue
+        }
+    }
 
     init(
         filter: SCContentFilter,
         streamConfiguration: SCStreamConfiguration,
+        outputFileType: AVFileType,
+        videoCodecType: AVVideoCodecType,
         sourceDescription: String
     ) {
         self.filter = filter
         self.streamConfiguration = streamConfiguration
+        self.outputFileType = outputFileType
+        self.videoCodecType = videoCodecType
         self.sourceDescription = sourceDescription
     }
 }

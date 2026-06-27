@@ -118,33 +118,58 @@ struct ContentView: View {
                         Button("Capture Text from Region") {
                             screenCaptureService.capture(.ocrRegion)
                         }
+                        .disabled(screenCaptureService.isCapturing)
 
                         Button("Capture Region") {
                             screenCaptureService.capture(.region)
                         }
+                        .disabled(screenCaptureService.isCapturing)
 
                         Button("Capture Window") {
                             screenCaptureService.capture(.window)
                         }
+                        .disabled(screenCaptureService.isCapturing)
 
                         Button("Capture Application") {
                             screenCaptureService.capture(.application)
                         }
+                        .disabled(screenCaptureService.isCapturing)
 
                         Button("Capture Display") {
                             screenCaptureService.capture(.display)
                         }
+                        .disabled(screenCaptureService.isCapturing)
 
                         Divider()
 
                         Button("Record Display") {
                             screenCaptureService.capture(.recording)
                         }
+                        .disabled(screenCaptureService.isCapturing)
+
+                        Button("Pause Recording") {
+                            screenCaptureService.pauseRecording()
+                        }
+                        .disabled(!screenCaptureService.isRecording || screenCaptureService.isRecordingPaused)
+
+                        Button("Continue Recording") {
+                            screenCaptureService.resumeRecording()
+                        }
+                        .disabled(!screenCaptureService.isRecordingPaused)
+
+                        Button("Stop Recording") {
+                            screenCaptureService.stopRecording()
+                        }
+                        .disabled(!screenCaptureService.isRecording && !screenCaptureService.isRecordingPaused)
+
+                        Button("Cancel Recording") {
+                            screenCaptureService.cancelRecording()
+                        }
+                        .disabled(!screenCaptureService.isRecording && !screenCaptureService.isRecordingPaused)
                     } label: {
                         Label("Capture", systemImage: "camera.viewfinder")
                     }
                     .accessibilityIdentifier("clipboard.capture.menu")
-                    .disabled(screenCaptureService.isCapturing)
                 }
 
                 if !selectedItemIdentifiers.isEmpty {
@@ -293,28 +318,14 @@ struct ContentView: View {
                     .padding(8)
                     .allowsHitTesting(false)
             } else if screenCaptureService.isCapturing,
+                      !screenCaptureService.isRecording,
+                      !screenCaptureService.isRecordingPaused,
                       let statusText = screenCaptureService.statusText {
                 VStack(spacing: 10) {
                     ProgressView()
                     Text(statusText)
-                    if screenCaptureService.isRecording || screenCaptureService.isRecordingPaused {
-                        HStack(spacing: 8) {
-                            Button(screenCaptureService.isRecordingPaused ? "Continue" : "Pause") {
-                                if screenCaptureService.isRecordingPaused {
-                                    screenCaptureService.resumeRecording()
-                                } else {
-                                    screenCaptureService.pauseRecording()
-                                }
-                            }
-
-                            Button("Stop") {
-                                screenCaptureService.stopRecording()
-                            }
-                        }
-                    } else {
-                        Button("Cancel") {
-                            screenCaptureService.cancelCapture()
-                        }
+                    Button("Cancel") {
+                        screenCaptureService.cancelCapture()
                     }
                 }
                 .padding(18)
