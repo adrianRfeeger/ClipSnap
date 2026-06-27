@@ -28,6 +28,8 @@ struct ImageClipboardEditor: View {
     @State private var annotationText = ""
     @State private var annotations: [ImageAnnotation] = []
     @State private var selectedAnnotationID: UUID?
+    @State private var annotationDragSnapshot: ImageAnnotation?
+    @State private var activeAnnotationHandle: AnnotationHandle?
     @FocusState private var annotationTextIsFocused: Bool
 
     init(image: NSImage, saveAction: @escaping (Data) -> Void) {
@@ -61,10 +63,6 @@ struct ImageClipboardEditor: View {
 
                     ForEach(annotations) { annotation in
                         annotationView(annotation, in: imageRect)
-                            .contentShape(Rectangle())
-                            .onTapGesture {
-                                select(annotation)
-                            }
                     }
 
                     if !selection.isEmpty {
@@ -310,6 +308,14 @@ struct ImageClipboardEditor: View {
                     .stroke(.tint, style: StrokeStyle(lineWidth: 1.5, dash: [5, 3]))
                     .frame(width: displayRect.width, height: displayRect.height)
                     .offset(x: displayRect.minX, y: displayRect.minY)
+
+                ForEach(annotation.handles(in: imageRect)) { handle in
+                    Circle()
+                        .fill(.background)
+                        .stroke(.tint, lineWidth: 1.5)
+                        .frame(width: 9, height: 9)
+                        .position(handle.position)
+                }
             }
         }
     }
@@ -397,7 +403,7 @@ struct ImageClipboardEditor: View {
                 transformButton("Flip Horizontal", systemImage: "flip.horizontal") {
                     apply(.flipHorizontal)
                 }
-                transformButton("Flip Vertical", systemImage: "flip.vertical") {
+                transformButton("Flip Vertical", systemImage: "arrow.up.and.down") {
                     apply(.flipVertical)
                 }
 
@@ -421,7 +427,7 @@ struct ImageClipboardEditor: View {
                     .disabled(!selectedTool.usesColor)
 
                 Toggle(isOn: $fillsShape) {
-                    Label("Fill", systemImage: "paintbucket")
+                    Label("Fill", systemImage: "drop.fill")
                 }
                 .toggleStyle(.button)
                 .labelStyle(.iconOnly)
@@ -431,6 +437,27 @@ struct ImageClipboardEditor: View {
                 ColorPicker("Fill Color", selection: $fillColor, supportsOpacity: true)
                     .labelsHidden()
                     .disabled(!selectedTool.usesFill || !fillsShape)
+
+                Menu {
+                    Button("Duplicate") {
+                        duplicateSelectedAnnotation()
+                    }
+                    Button("Bring Forward") {
+                        moveSelectedAnnotationForward()
+                    }
+                    Button("Send Backward") {
+                        moveSelectedAnnotationBackward()
+                    }
+                    Divider()
+                    Button("Delete", role: .destructive) {
+                        deleteSelectedAnnotation()
+                    }
+                } label: {
+                    Label("Object", systemImage: "square.3.layers.3d")
+                        .labelStyle(.iconOnly)
+                }
+                .disabled(selectedAnnotationID == nil)
+                .help("Object Actions")
             }
 
             HStack(spacing: 12) {
@@ -524,6 +551,10 @@ struct ImageClipboardEditor: View {
                     return
                 }
                 let point = clamped(value.location, to: imageRect)
+                if beginOrContinueAnnotationManipulation(at: point, translation: value.translation, in: imageRect) {
+                    return
+                }
+
                 let start = dragStart ?? point
                 if dragStart == nil {
                     freehandPoints = selectedTool == .freehand ? [start] : []
@@ -555,6 +586,13 @@ struct ImageClipboardEditor: View {
                 normalizedSelectionEnd = normalized(point: point, in: imageRect)
             }
             .onEnded { value in
+                if annotationDragSnapshot != nil || activeAnnotationHandle != nil {
+                    annotationDragSnapshot = nil
+                    activeAnnotationHandle = nil
+                    dragStart = nil
+                    return
+                }
+
                 if selectedTool == .text, selection.width < 4 || selection.height < 4 {
                     placeDefaultTextBox(at: clamped(value.location, to: imageRect), in: imageRect)
                 }
@@ -608,6 +646,44 @@ struct ImageClipboardEditor: View {
         )
         normalizedSelectionStart = normalized(point: selectionStart, in: imageRect)
         normalizedSelectionEnd = normalized(point: selectionEnd, in: imageRect)
+    }
+
+    private func beginOrContinueAnnotationManipulation(
+        at point: CGPoint,
+        translation: CGSize,
+        in imageRect: CGRect
+    ) -> Bool {
+        guard selectedTool.appliesLive else {
+            return false
+        }
+
+        if let selectedAnnotation = selectedAnnotation,
+           annotationDragSnapshot == nil,
+           let handle = selectedAnnotation.hitHandle(at: point, in: imageRect) {
+            annotationDragSnapshot = selectedAnnotation
+            activeAnnotationHandle = handle
+        } else if annotationDragSnapshot == nil,
+                  let hitAnnotation = annotations.reversed().first(where: { $0.hitTest(point, in: imageRect) }) {
+            select(hitAnnotation)
+            annotationDragSnapshot = hitAnnotation
+            activeAnnotationHandle = nil
+        }
+
+        guard let snapshot = annotationDragSnapshot,
+              let index = annotations.firstIndex(where: { $0.id == snapshot.id }) else {
+            return false
+        }
+
+        let delta = CGSize(
+            width: translation.width / imageRect.width,
+            height: translation.height / imageRect.height
+        )
+        if let activeAnnotationHandle {
+            annotations[index] = snapshot.resized(handle: activeAnnotationHandle, by: delta)
+        } else {
+            annotations[index] = snapshot.moved(by: delta)
+        }
+        return true
     }
 
     private func applySelectedTool() {
@@ -742,6 +818,37 @@ struct ImageClipboardEditor: View {
         self.selectedAnnotationID = nil
     }
 
+    private func duplicateSelectedAnnotation() {
+        guard let selectedAnnotation,
+              let index = annotations.firstIndex(where: { $0.id == selectedAnnotation.id }) else {
+            return
+        }
+
+        let duplicate = selectedAnnotation.copyWithNewID().moved(by: CGSize(width: 0.025, height: 0.025))
+        annotations.insert(duplicate, at: min(index + 1, annotations.count))
+        selectedAnnotationID = duplicate.id
+    }
+
+    private func moveSelectedAnnotationForward() {
+        guard let selectedAnnotationID,
+              let index = annotations.firstIndex(where: { $0.id == selectedAnnotationID }),
+              index < annotations.count - 1 else {
+            return
+        }
+
+        annotations.swapAt(index, index + 1)
+    }
+
+    private func moveSelectedAnnotationBackward() {
+        guard let selectedAnnotationID,
+              let index = annotations.firstIndex(where: { $0.id == selectedAnnotationID }),
+              index > 0 else {
+            return
+        }
+
+        annotations.swapAt(index, index - 1)
+    }
+
     private func clearSelection() {
         selection = .zero
         normalizedSelection = .zero
@@ -787,10 +894,30 @@ private extension CGPoint {
             y: imageRect.minY + y * imageRect.height
         )
     }
+
+    func offsetBy(dx: CGFloat, dy: CGFloat) -> CGPoint {
+        CGPoint(x: x + dx, y: y + dy)
+    }
+
+    func clampedToUnit() -> CGPoint {
+        CGPoint(x: min(max(x, 0), 1), y: min(max(y, 0), 1))
+    }
+
+    func distanceToSegment(from start: CGPoint, to end: CGPoint) -> CGFloat {
+        let dx = end.x - start.x
+        let dy = end.y - start.y
+        guard dx != 0 || dy != 0 else {
+            return hypot(x - start.x, y - start.y)
+        }
+
+        let t = max(0, min(1, ((x - start.x) * dx + (y - start.y) * dy) / (dx * dx + dy * dy)))
+        let projection = CGPoint(x: start.x + t * dx, y: start.y + t * dy)
+        return hypot(x - projection.x, y - projection.y)
+    }
 }
 
 private struct ImageAnnotation: Identifiable {
-    let id = UUID()
+    var id = UUID()
     var tool: ClipboardImageEditing.Tool
     var normalizedSelection: CGRect
     var start: CGPoint
@@ -828,6 +955,12 @@ private struct ImageAnnotation: Identifiable {
         }
     }
 
+    func copyWithNewID() -> ImageAnnotation {
+        var copy = self
+        copy.id = UUID()
+        return copy
+    }
+
     func displayRect(in imageRect: CGRect) -> CGRect {
         let rect = normalizedSelection.standardized
         return CGRect(
@@ -837,6 +970,163 @@ private struct ImageAnnotation: Identifiable {
             height: rect.height * imageRect.height
         )
     }
+
+    func hitTest(_ point: CGPoint, in imageRect: CGRect) -> Bool {
+        let tolerance: CGFloat = 8
+        switch tool {
+        case .line, .arrow:
+            return point.distanceToSegment(
+                from: start.displayPoint(in: imageRect),
+                to: end.displayPoint(in: imageRect)
+            ) <= tolerance
+        case .freehand:
+            let displayPoints = points.map { $0.displayPoint(in: imageRect) }
+            guard displayPoints.count > 1 else {
+                return false
+            }
+            return zip(displayPoints, displayPoints.dropFirst()).contains { first, second in
+                point.distanceToSegment(from: first, to: second) <= tolerance
+            }
+        case .crop, .redact:
+            return false
+        case .rectangle, .roundedRectangle, .oval, .highlight, .text:
+            return displayRect(in: imageRect).insetBy(dx: -tolerance, dy: -tolerance).contains(point)
+        }
+    }
+
+    func hitHandle(at point: CGPoint, in imageRect: CGRect) -> AnnotationHandle? {
+        handles(in: imageRect).first { handle in
+            hypot(point.x - handle.position.x, point.y - handle.position.y) <= 9
+        }?.kind
+    }
+
+    func handles(in imageRect: CGRect) -> [AnnotationHandlePosition] {
+        switch tool {
+        case .line, .arrow:
+            return [
+                AnnotationHandlePosition(kind: .start, position: start.displayPoint(in: imageRect)),
+                AnnotationHandlePosition(kind: .end, position: end.displayPoint(in: imageRect))
+            ]
+        case .freehand, .crop, .redact:
+            return []
+        case .rectangle, .roundedRectangle, .oval, .highlight, .text:
+            let rect = displayRect(in: imageRect)
+            return [
+                AnnotationHandlePosition(kind: .topLeft, position: CGPoint(x: rect.minX, y: rect.minY)),
+                AnnotationHandlePosition(kind: .topRight, position: CGPoint(x: rect.maxX, y: rect.minY)),
+                AnnotationHandlePosition(kind: .bottomLeft, position: CGPoint(x: rect.minX, y: rect.maxY)),
+                AnnotationHandlePosition(kind: .bottomRight, position: CGPoint(x: rect.maxX, y: rect.maxY))
+            ]
+        }
+    }
+
+    func moved(by delta: CGSize) -> ImageAnnotation {
+        var copy = self
+        let clampedDelta = clampedMoveDelta(delta)
+        copy.normalizedSelection = normalizedSelection.offsetBy(
+            dx: clampedDelta.width,
+            dy: clampedDelta.height
+        )
+        copy.start = start.offsetBy(dx: clampedDelta.width, dy: clampedDelta.height)
+        copy.end = end.offsetBy(dx: clampedDelta.width, dy: clampedDelta.height)
+        copy.points = points.map { $0.offsetBy(dx: clampedDelta.width, dy: clampedDelta.height) }
+        return copy
+    }
+
+    func resized(handle: AnnotationHandle, by delta: CGSize) -> ImageAnnotation {
+        var copy = self
+        switch handle {
+        case .start:
+            copy.start = start.offsetBy(dx: delta.width, dy: delta.height).clampedToUnit()
+            copy.normalizedSelection = CGRect(
+                x: min(copy.start.x, end.x),
+                y: min(copy.start.y, end.y),
+                width: abs(end.x - copy.start.x),
+                height: abs(end.y - copy.start.y)
+            )
+        case .end:
+            copy.end = end.offsetBy(dx: delta.width, dy: delta.height).clampedToUnit()
+            copy.normalizedSelection = CGRect(
+                x: min(start.x, copy.end.x),
+                y: min(start.y, copy.end.y),
+                width: abs(copy.end.x - start.x),
+                height: abs(copy.end.y - start.y)
+            )
+        case .topLeft, .topRight, .bottomLeft, .bottomRight:
+            copy.normalizedSelection = resizedRect(handle: handle, by: delta)
+                .standardized
+                .intersection(CGRect(x: 0, y: 0, width: 1, height: 1))
+        }
+        return copy
+    }
+
+    private func resizedRect(handle: AnnotationHandle, by delta: CGSize) -> CGRect {
+        var rect = normalizedSelection.standardized
+        switch handle {
+        case .topLeft:
+            rect = CGRect(x: rect.minX + delta.width, y: rect.minY + delta.height, width: rect.width - delta.width, height: rect.height - delta.height)
+        case .topRight:
+            rect = CGRect(x: rect.minX, y: rect.minY + delta.height, width: rect.width + delta.width, height: rect.height - delta.height)
+        case .bottomLeft:
+            rect = CGRect(x: rect.minX + delta.width, y: rect.minY, width: rect.width - delta.width, height: rect.height + delta.height)
+        case .bottomRight:
+            rect = CGRect(x: rect.minX, y: rect.minY, width: rect.width + delta.width, height: rect.height + delta.height)
+        case .start, .end:
+            break
+        }
+        let minimum: CGFloat = 0.01
+        if abs(rect.width) < minimum {
+            rect.size.width = rect.width < 0 ? -minimum : minimum
+        }
+        if abs(rect.height) < minimum {
+            rect.size.height = rect.height < 0 ? -minimum : minimum
+        }
+        return rect
+    }
+
+    private func clampedMoveDelta(_ delta: CGSize) -> CGSize {
+        let bounds = overallBounds
+        return CGSize(
+            width: min(max(delta.width, -bounds.minX), 1 - bounds.maxX),
+            height: min(max(delta.height, -bounds.minY), 1 - bounds.maxY)
+        )
+    }
+
+    private var overallBounds: CGRect {
+        switch tool {
+        case .line, .arrow:
+            return CGRect(
+                x: min(start.x, end.x),
+                y: min(start.y, end.y),
+                width: abs(end.x - start.x),
+                height: abs(end.y - start.y)
+            )
+        case .freehand:
+            guard let first = points.first else {
+                return .zero
+            }
+            return points.dropFirst().reduce(CGRect(origin: first, size: .zero)) { rect, point in
+                rect.union(CGRect(origin: point, size: .zero))
+            }
+        case .crop, .redact, .rectangle, .roundedRectangle, .oval, .highlight, .text:
+            return normalizedSelection.standardized
+        }
+    }
+}
+
+private enum AnnotationHandle {
+    case topLeft
+    case topRight
+    case bottomLeft
+    case bottomRight
+    case start
+    case end
+}
+
+private struct AnnotationHandlePosition: Identifiable {
+    let id = UUID()
+    let kind: AnnotationHandle
+    let position: CGPoint
 }
 
 enum ClipboardImageEditing {
@@ -890,7 +1180,7 @@ enum ClipboardImageEditing {
             case .rectangle:
                 return "rectangle"
             case .roundedRectangle:
-                return "roundedrectangle"
+                return "rectangle"
             case .oval:
                 return "oval"
             case .line:
