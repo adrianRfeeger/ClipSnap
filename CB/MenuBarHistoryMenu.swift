@@ -101,30 +101,32 @@ struct MenuBarHistoryMenu: View {
 
             Divider()
 
-            Button("Record Display") {
-                screenCaptureService.capture(.recording)
-            }
-            .disabled(screenCaptureService.isCapturing)
+            Menu("Record Display") {
+                Button("Start") {
+                    screenCaptureService.capture(.recording)
+                }
+                .disabled(screenCaptureService.isCapturing)
 
-            Button("Pause Recording") {
-                screenCaptureService.pauseRecording()
-            }
-            .disabled(!screenCaptureService.isRecording || screenCaptureService.isRecordingPaused)
+                Button("Pause") {
+                    screenCaptureService.pauseRecording()
+                }
+                .disabled(!screenCaptureService.isRecording || screenCaptureService.isRecordingPaused)
 
-            Button("Continue Recording") {
-                screenCaptureService.resumeRecording()
-            }
-            .disabled(!screenCaptureService.isRecordingPaused)
+                Button("Continue") {
+                    screenCaptureService.resumeRecording()
+                }
+                .disabled(!screenCaptureService.isRecordingPaused)
 
-            Button("Stop Recording") {
-                screenCaptureService.stopRecording()
-            }
-            .disabled(!screenCaptureService.isRecording && !screenCaptureService.isRecordingPaused)
+                Button("Stop") {
+                    screenCaptureService.stopRecording()
+                }
+                .disabled(!screenCaptureService.isRecording && !screenCaptureService.isRecordingPaused)
 
-            Button("Cancel Recording") {
-                screenCaptureService.cancelRecording()
+                Button("Cancel") {
+                    screenCaptureService.cancelRecording()
+                }
+                .disabled(!screenCaptureService.isRecording && !screenCaptureService.isRecordingPaused)
             }
-            .disabled(!screenCaptureService.isRecording && !screenCaptureService.isRecordingPaused)
         }
 
         Label(cloudSyncMonitor.state.title, systemImage: cloudSyncMonitor.state.systemImageName)

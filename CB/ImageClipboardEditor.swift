@@ -137,7 +137,18 @@ struct ImageClipboardEditor: View {
             }
         }
         .padding(18)
-        .frame(minWidth: 760, minHeight: 540)
+        .frame(
+            minWidth: 760,
+            idealWidth: 980,
+            maxWidth: .infinity,
+            minHeight: 540,
+            idealHeight: 700,
+            maxHeight: .infinity
+        )
+        .background {
+            ResizableEditorWindowConfigurator(minSize: NSSize(width: 760, height: 540))
+                .frame(width: 0, height: 0)
+        }
     }
 
     @ViewBuilder
@@ -1127,6 +1138,63 @@ private struct AnnotationHandlePosition: Identifiable {
     let id = UUID()
     let kind: AnnotationHandle
     let position: CGPoint
+}
+
+private struct ResizableEditorWindowConfigurator: NSViewRepresentable {
+    let minSize: NSSize
+
+    func makeNSView(context: Context) -> WindowConfigurationView {
+        WindowConfigurationView(minSize: minSize)
+    }
+
+    func updateNSView(_ nsView: WindowConfigurationView, context: Context) {
+        nsView.minSize = minSize
+    }
+
+    final class WindowConfigurationView: NSView {
+        var minSize: NSSize {
+            didSet {
+                configureWindow()
+            }
+        }
+
+        init(minSize: NSSize) {
+            self.minSize = minSize
+            super.init(frame: .zero)
+        }
+
+        @available(*, unavailable)
+        required init?(coder: NSCoder) {
+            fatalError("init(coder:) has not been implemented")
+        }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            configureWindow()
+        }
+
+        private func configureWindow() {
+            DispatchQueue.main.async { [weak self] in
+                guard let self, let window = self.window else {
+                    return
+                }
+
+                window.styleMask.insert(.resizable)
+                window.minSize = self.minSize
+
+                var frame = window.frame
+                let targetWidth = max(frame.width, self.minSize.width)
+                let targetHeight = max(frame.height, self.minSize.height)
+                guard targetWidth != frame.width || targetHeight != frame.height else {
+                    return
+                }
+
+                frame.origin.y -= targetHeight - frame.height
+                frame.size = NSSize(width: targetWidth, height: targetHeight)
+                window.setFrame(frame, display: true)
+            }
+        }
+    }
 }
 
 enum ClipboardImageEditing {
