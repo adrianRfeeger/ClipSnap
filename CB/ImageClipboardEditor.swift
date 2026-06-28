@@ -1180,7 +1180,7 @@ enum ClipboardImageEditing {
             case .rectangle:
                 return "rectangle"
             case .roundedRectangle:
-                return "rectangle"
+                return "capsule"
             case .oval:
                 return "oval"
             case .line:

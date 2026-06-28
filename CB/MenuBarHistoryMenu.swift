@@ -7,6 +7,8 @@ struct MenuBarHistoryMenu: View {
     @ObservedObject var clipboardMonitor: ClipboardMonitor
     @ObservedObject var cloudSyncMonitor: CloudSyncMonitor
     @ObservedObject var screenCaptureService: ScreenCaptureService
+    @AppStorage(ClipboardSettingKey.menuBarItemCount)
+    private var menuBarItemCount = ClipboardSettings.defaults.menuBarItemCount
 
     @FetchRequest(
         sortDescriptors: [
@@ -18,7 +20,7 @@ struct MenuBarHistoryMenu: View {
     private var items: FetchedResults<ClipboardItem>
 
     private var recentItems: [ClipboardItem] {
-        Array(items.filter { !$0.isArchived }.prefix(12))
+        Array(items.filter { !$0.isArchived }.prefix(max(1, min(menuBarItemCount, 50))))
     }
 
     var body: some View {
@@ -64,6 +66,38 @@ struct MenuBarHistoryMenu: View {
                 screenCaptureService.capture(.display)
             }
             .disabled(screenCaptureService.isCapturing)
+
+            Menu("Delayed Capture") {
+                Button("Text from Region") {
+                    screenCaptureService.capture(.ocrRegion, delayed: true)
+                }
+                .disabled(screenCaptureService.isCapturing)
+
+                Button("Region") {
+                    screenCaptureService.capture(.region, delayed: true)
+                }
+                .disabled(screenCaptureService.isCapturing)
+
+                Button("Window") {
+                    screenCaptureService.capture(.window, delayed: true)
+                }
+                .disabled(screenCaptureService.isCapturing)
+
+                Button("Application") {
+                    screenCaptureService.capture(.application, delayed: true)
+                }
+                .disabled(screenCaptureService.isCapturing)
+
+                Button("Display") {
+                    screenCaptureService.capture(.display, delayed: true)
+                }
+                .disabled(screenCaptureService.isCapturing)
+            }
+
+            Button("Cancel Delayed Capture") {
+                screenCaptureService.cancelCapture()
+            }
+            .disabled(!screenCaptureService.isWaitingForDelayedCapture)
 
             Divider()
 

@@ -17,6 +17,9 @@ struct SettingsView: View {
     @AppStorage(ClipboardSettingKey.maximumItemCount)
     private var maximumItemCount = ClipboardSettings.defaults.maximumItemCount
 
+    @AppStorage(ClipboardSettingKey.menuBarItemCount)
+    private var menuBarItemCount = ClipboardSettings.defaults.menuBarItemCount
+
     @AppStorage(ClipboardSettingKey.retentionDays)
     private var retentionDays = ClipboardSettings.defaults.retentionDays
 
@@ -75,6 +78,9 @@ struct SettingsView: View {
     @AppStorage(ScreenCaptureSettingKey.copiesOCRText)
     private var screenCaptureCopiesOCRText = true
 
+    @AppStorage(ScreenCaptureSettingKey.captureDelaySeconds)
+    private var screenCaptureDelaySeconds = 5
+
     @AppStorage(ScreenCaptureSettingKey.recordingAudioMode)
     private var screenRecordingAudioMode = ScreenRecordingAudioMode.none.rawValue
 
@@ -116,6 +122,7 @@ struct SettingsView: View {
             Form {
                 Toggle("Move repeated items to the top", isOn: $moveDuplicatesToTop)
                 Toggle("Keep favorites during cleanup", isOn: $keepFavorites)
+                Stepper("Menu bar items: \(menuBarItemCount)", value: $menuBarItemCount, in: 1...50)
                 Toggle("Show clipboard history in Spotlight", isOn: $indexesClipboardHistory)
                     .onChange(of: indexesClipboardHistory) {
                         ClipboardSpotlightIndexer.shared.rebuild(context: viewContext)
@@ -292,6 +299,11 @@ struct SettingsView: View {
                 Toggle("Include sheets and popovers", isOn: $screenCaptureIncludesChildWindows)
                 Toggle("Copy capture to clipboard", isOn: $screenCaptureCopiesAfterCapture)
                 Toggle("Copy recognized text to clipboard", isOn: $screenCaptureCopiesOCRText)
+                Stepper(
+                    "Delayed capture: \(captureDelayDescription)",
+                    value: $screenCaptureDelaySeconds,
+                    in: 1...30
+                )
 
                 Section("Screen Recording") {
                     Picker("Audio", selection: $screenRecordingAudioMode) {
@@ -479,6 +491,10 @@ struct SettingsView: View {
         }
         let hours = sensitiveRetentionMinutes / 60
         return hours == 1 ? "1 hour" : "\(hours) hours"
+    }
+
+    private var captureDelayDescription: String {
+        screenCaptureDelaySeconds == 1 ? "1 second" : "\(screenCaptureDelaySeconds) seconds"
     }
 
     private var storageSummary: ClipboardStorageSummary {

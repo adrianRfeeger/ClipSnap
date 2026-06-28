@@ -22,6 +22,7 @@ enum ScreenCaptureSettingKey {
     static let includesChildWindows = "screenCaptureIncludesChildWindows"
     static let copiesAfterCapture = "screenCaptureCopiesAfterCapture"
     static let copiesOCRText = "screenCaptureCopiesOCRText"
+    static let captureDelaySeconds = "screenCaptureDelaySeconds"
     static let recordingAudioMode = "screenCaptureRecordingAudioMode"
 }
 
@@ -60,6 +61,7 @@ final class ScreenCaptureService: NSObject, ObservableObject {
     @Published private(set) var isCapturing = false
     @Published private(set) var isRecording = false
     @Published private(set) var isRecordingPaused = false
+    @Published private(set) var isWaitingForDelayedCapture = false
     @Published private(set) var statusText: String?
     @Published private(set) var lastCapturedItemIdentifier: String?
     @Published var errorMessage: String?
@@ -70,6 +72,7 @@ final class ScreenCaptureService: NSObject, ObservableObject {
     private let regionSelectionController = ScreenRegionSelectionController()
     private var captureTask: Task<Void, Never>?
     private var pickerPurpose: PickerPurpose?
+    private var pickerDelaySeconds = 0
     private var recordingSession: ScreenRecordingSession?
 
     var hasScreenRecordingAccess: Bool {
@@ -86,11 +89,12 @@ final class ScreenCaptureService: NSObject, ObservableObject {
         picker.remove(self)
     }
 
-    func capture(_ mode: ScreenCaptureMode) {
+    func capture(_ mode: ScreenCaptureMode, delayed: Bool = false) {
         guard !isCapturing else {
             return
         }
 
+        let delaySeconds = delayed ? configuredCaptureDelaySeconds() : 0
         errorMessage = nil
         canOpenScreenRecordingSettings = false
         guard CGPreflightScreenCaptureAccess() else {
@@ -104,15 +108,15 @@ final class ScreenCaptureService: NSObject, ObservableObject {
 
         switch mode {
         case .region:
-            selectRegion(for: .image)
+            selectRegion(for: .image, delaySeconds: delaySeconds)
         case .ocrRegion:
-            selectRegion(for: .text)
+            selectRegion(for: .text, delaySeconds: delaySeconds)
         case .window, .application, .display, .recording:
-            presentPicker(for: mode)
+            presentPicker(for: mode, delaySeconds: mode == .recording ? 0 : delaySeconds)
         }
     }
 
-    private func presentPicker(for mode: ScreenCaptureMode) {
+    private func presentPicker(for mode: ScreenCaptureMode, delaySeconds: Int) {
         var configuration = SCContentSharingPickerConfiguration()
         configuration.allowedPickerModes = pickerMode(for: mode)
         configuration.allowsChangingSelectedContent = false
@@ -123,6 +127,7 @@ final class ScreenCaptureService: NSObject, ObservableObject {
         picker.configuration = configuration
         picker.isActive = true
         pickerPurpose = mode == .recording ? .recording : .capture
+        pickerDelaySeconds = delaySeconds
         isCapturing = true
         statusText = mode == .recording ? "Choose a display to record" : "Choose content to capture"
         picker.present()
@@ -143,7 +148,7 @@ final class ScreenCaptureService: NSObject, ObservableObject {
         }
     }
 
-    private func selectRegion(for purpose: RegionCapturePurpose) {
+    private func selectRegion(for purpose: RegionCapturePurpose, delaySeconds: Int) {
         isCapturing = true
         statusText = purpose == .text ? "Select an area to recognize text" : "Select an area to capture"
         regionSelectionController.selectRegion(
@@ -162,11 +167,16 @@ final class ScreenCaptureService: NSObject, ObservableObject {
             }
 
             self.captureTask = Task {
-                try? await Task.sleep(for: .milliseconds(150))
-                guard !Task.isCancelled else {
-                    return
+                do {
+                    try await self.waitForDelayedCapture(seconds: delaySeconds)
+                    try await Task.sleep(for: .milliseconds(150))
+                    guard !Task.isCancelled else {
+                        return
+                    }
+                    await self.captureRegion(rect, for: purpose)
+                } catch {
+                    self.failCapture(error)
                 }
-                await self.captureRegion(rect, for: purpose)
             }
         }
     }
@@ -222,8 +232,9 @@ final class ScreenCaptureService: NSObject, ObservableObject {
         statusText = nil
     }
 
-    private func capture(filter: SCContentFilter) async {
+    private func capture(filter: SCContentFilter, delaySeconds: Int = 0) async {
         do {
+            try await waitForDelayedCapture(seconds: delaySeconds)
             let defaults = UserDefaults.standard
             let configuration = SCScreenshotConfiguration()
             configuration.showsCursor = defaults.bool(forKey: ScreenCaptureSettingKey.showsCursor)
@@ -246,6 +257,31 @@ final class ScreenCaptureService: NSObject, ObservableObject {
         } catch {
             failCapture(error)
         }
+    }
+
+    private func waitForDelayedCapture(seconds: Int) async throws {
+        guard seconds > 0 else {
+            isWaitingForDelayedCapture = false
+            return
+        }
+
+        isWaitingForDelayedCapture = true
+        for remainingSeconds in stride(from: seconds, through: 1, by: -1) {
+            statusText = remainingSeconds == 1
+                ? "Capturing in 1 second…"
+                : "Capturing in \(remainingSeconds) seconds…"
+            try await Task.sleep(for: .seconds(1))
+        }
+        isWaitingForDelayedCapture = false
+        statusText = "Capturing…"
+    }
+
+    private func configuredCaptureDelaySeconds() -> Int {
+        let defaults = UserDefaults.standard
+        guard defaults.object(forKey: ScreenCaptureSettingKey.captureDelaySeconds) != nil else {
+            return 5
+        }
+        return max(1, min(defaults.integer(forKey: ScreenCaptureSettingKey.captureDelaySeconds), 30))
     }
 
     private func startRecording(filter: SCContentFilter) async {
@@ -674,6 +710,7 @@ final class ScreenCaptureService: NSObject, ObservableObject {
             }
         }
         isCapturing = false
+        isWaitingForDelayedCapture = false
         statusText = nil
         picker.isActive = false
     }
@@ -681,6 +718,7 @@ final class ScreenCaptureService: NSObject, ObservableObject {
     private func failCapture(_ error: Error) {
         guard !(error is CancellationError) else {
             isCapturing = false
+            isWaitingForDelayedCapture = false
             statusText = nil
             return
         }
@@ -689,6 +727,7 @@ final class ScreenCaptureService: NSObject, ObservableObject {
         isRecordingPaused = false
         recordingSession = nil
         isCapturing = false
+        isWaitingForDelayedCapture = false
         statusText = nil
         picker.isActive = false
     }
@@ -704,8 +743,10 @@ final class ScreenCaptureService: NSObject, ObservableObject {
         regionSelectionController.cancel()
         picker.isActive = false
         pickerPurpose = nil
+        pickerDelaySeconds = 0
         isRecording = false
         isRecordingPaused = false
+        isWaitingForDelayedCapture = false
         isCapturing = false
         statusText = nil
     }
@@ -758,8 +799,10 @@ extension ScreenCaptureService: SCContentSharingPickerObserver {
                 self?.pickerPurpose = nil
                 await self?.startRecording(filter: filter)
             case .capture, .none:
+                let delaySeconds = self?.pickerDelaySeconds ?? 0
                 self?.pickerPurpose = nil
-                await self?.capture(filter: filter)
+                self?.pickerDelaySeconds = 0
+                await self?.capture(filter: filter, delaySeconds: delaySeconds)
             }
         }
     }
@@ -769,8 +812,10 @@ extension ScreenCaptureService: SCContentSharingPickerObserver {
             self?.isCapturing = false
             self?.isRecording = false
             self?.isRecordingPaused = false
+            self?.isWaitingForDelayedCapture = false
             self?.statusText = nil
             self?.pickerPurpose = nil
+            self?.pickerDelaySeconds = 0
             picker.isActive = false
         }
     }

@@ -2,6 +2,7 @@ import Foundation
 
 enum ClipboardSettingKey {
     static let maximumItemCount = "maximumItemCount"
+    static let menuBarItemCount = "menuBarItemCount"
     static let retentionDays = "retentionDays"
     static let maximumStorageMegabytes = "maximumStorageMegabytes"
     static let keepFavorites = "keepFavorites"
@@ -19,6 +20,7 @@ enum ClipboardSettingKey {
 
 struct ClipboardSettings {
     var maximumItemCount: Int
+    var menuBarItemCount: Int
     var retentionDays: Int
     var maximumStorageMegabytes: Int
     var keepFavorites: Bool
@@ -35,6 +37,7 @@ struct ClipboardSettings {
 
     static let defaults = ClipboardSettings(
         maximumItemCount: 500,
+        menuBarItemCount: 12,
         retentionDays: 30,
         maximumStorageMegabytes: 250,
         keepFavorites: true,
@@ -61,9 +64,13 @@ struct ClipboardSettings {
         let maximumStorageMegabytes = defaults.object(forKey: ClipboardSettingKey.maximumStorageMegabytes) == nil
             ? fallback.maximumStorageMegabytes
             : positiveValue(defaults.integer(forKey: ClipboardSettingKey.maximumStorageMegabytes), fallback: fallback.maximumStorageMegabytes)
+        let menuBarItemCount = defaults.object(forKey: ClipboardSettingKey.menuBarItemCount) == nil
+            ? fallback.menuBarItemCount
+            : min(50, positiveValue(defaults.integer(forKey: ClipboardSettingKey.menuBarItemCount), fallback: fallback.menuBarItemCount))
 
         return ClipboardSettings(
             maximumItemCount: maximumItemCount,
+            menuBarItemCount: menuBarItemCount,
             retentionDays: retentionDays,
             maximumStorageMegabytes: maximumStorageMegabytes,
             keepFavorites: defaults.object(forKey: ClipboardSettingKey.keepFavorites) as? Bool

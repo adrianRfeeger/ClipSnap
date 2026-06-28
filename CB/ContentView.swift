@@ -140,6 +140,38 @@ struct ContentView: View {
                         }
                         .disabled(screenCaptureService.isCapturing)
 
+                        Menu("Delayed Capture") {
+                            Button("Capture Text from Region") {
+                                screenCaptureService.capture(.ocrRegion, delayed: true)
+                            }
+                            .disabled(screenCaptureService.isCapturing)
+
+                            Button("Capture Region") {
+                                screenCaptureService.capture(.region, delayed: true)
+                            }
+                            .disabled(screenCaptureService.isCapturing)
+
+                            Button("Capture Window") {
+                                screenCaptureService.capture(.window, delayed: true)
+                            }
+                            .disabled(screenCaptureService.isCapturing)
+
+                            Button("Capture Application") {
+                                screenCaptureService.capture(.application, delayed: true)
+                            }
+                            .disabled(screenCaptureService.isCapturing)
+
+                            Button("Capture Display") {
+                                screenCaptureService.capture(.display, delayed: true)
+                            }
+                            .disabled(screenCaptureService.isCapturing)
+                        }
+
+                        Button("Cancel Delayed Capture") {
+                            screenCaptureService.cancelCapture()
+                        }
+                        .disabled(!screenCaptureService.isWaitingForDelayedCapture)
+
                         Divider()
 
                         Button("Record Display") {
