@@ -183,28 +183,106 @@ final class ScreenCaptureService: NSObject, ObservableObject {
 
     private func captureRegion(_ rect: CGRect, for purpose: RegionCapturePurpose) async {
         do {
-            let image = try await SCScreenshotManager.captureImage(in: rect)
+            let image = try await captureRegionImage(in: rect)
             switch purpose {
             case .image:
                 await finishCapture(image: image, sourceDescription: "Region Capture")
             case .text:
                 statusText = "Recognizing text…"
-                let sourceIdentifier = clipboardMonitor.importScreenCapture(
-                    image,
-                    sourceDescription: "OCR Region Capture",
-                    copyToPasteboard: false
-                )
-                try await finishOCRCapture(image: image, sourceItemIdentifier: sourceIdentifier)
+                try await finishOCRRegionCapture(image: image, rect: rect)
             }
         } catch {
             failCapture(error)
         }
     }
 
+    private func captureRegionImage(in rect: CGRect) async throws -> CGImage {
+        try await captureScreenshotImage(in: screenCaptureRect(from: rect))
+    }
+
+    private func captureScreenshotImage(in rect: CGRect) async throws -> CGImage {
+        let configuration = SCScreenshotConfiguration()
+        configuration.showsCursor = false
+        let output = try await SCScreenshotManager.captureScreenshot(
+            rect: rect.integral,
+            configuration: configuration
+        )
+        guard let image = output.sdrImage ?? output.hdrImage else {
+            throw ScreenCaptureError.missingImage
+        }
+        return image
+    }
+
+    private func screenCaptureRect(from appKitRect: CGRect) -> CGRect {
+        let center = CGPoint(x: appKitRect.midX, y: appKitRect.midY)
+        guard let screen = NSScreen.screens.first(where: { $0.frame.contains(center) }) else {
+            return appKitRect
+        }
+
+        let clippedRect = appKitRect.intersection(screen.frame)
+        guard !clippedRect.isNull, !clippedRect.isEmpty else {
+            return appKitRect
+        }
+
+        let localMinY = clippedRect.minY - screen.frame.minY
+        let flippedMinY = screen.frame.height - localMinY - clippedRect.height
+        return CGRect(
+            x: clippedRect.minX,
+            y: screen.frame.minY + flippedMinY,
+            width: clippedRect.width,
+            height: clippedRect.height
+        )
+    }
+
+    private func finishOCRRegionCapture(image: CGImage, rect: CGRect) async throws {
+        do {
+            let text = try await recognizedText(in: image)
+            importOCRRegionCapture(image: image, text: text)
+        } catch ScreenCaptureError.noRecognizedText {
+            let convertedRect = screenCaptureRect(from: rect).integral
+            let originalRect = rect.integral
+            if !convertedRect.equalTo(originalRect) {
+                let fallbackImage = try await captureScreenshotImage(in: originalRect)
+                do {
+                    let fallbackText = try await recognizedText(in: fallbackImage)
+                    importOCRRegionCapture(image: fallbackImage, text: fallbackText)
+                    return
+                } catch ScreenCaptureError.noRecognizedText {
+                    importOCRRegionCaptureImage(image)
+                    throw ScreenCaptureError.noRecognizedText
+                }
+            }
+
+            importOCRRegionCaptureImage(image)
+            throw ScreenCaptureError.noRecognizedText
+        }
+    }
+
+    private func importOCRRegionCapture(image: CGImage, text: String) {
+        let sourceIdentifier = importOCRRegionCaptureImage(image)
+        importRecognizedText(text, sourceItemIdentifier: sourceIdentifier)
+    }
+
+    @discardableResult
+    private func importOCRRegionCaptureImage(_ image: CGImage) -> String? {
+        let sourceIdentifier = clipboardMonitor.importScreenCapture(
+            image,
+            sourceDescription: "OCR Region Capture",
+            copyToPasteboard: false
+        )
+        lastCapturedItemIdentifier = sourceIdentifier
+        return sourceIdentifier
+    }
+
     private func finishOCRCapture(
         image: CGImage,
         sourceItemIdentifier: String? = nil
     ) async throws {
+        let text = try await recognizedText(in: image)
+        importRecognizedText(text, sourceItemIdentifier: sourceItemIdentifier)
+    }
+
+    private func recognizedText(in image: CGImage) async throws -> String {
         var request = RecognizeTextRequest()
         request.recognitionLevel = .accurate
         request.usesLanguageCorrection = true
@@ -218,7 +296,10 @@ final class ScreenCaptureService: NSObject, ObservableObject {
         guard !text.isEmpty else {
             throw ScreenCaptureError.noRecognizedText
         }
+        return text
+    }
 
+    private func importRecognizedText(_ text: String, sourceItemIdentifier: String?) {
         let defaults = UserDefaults.standard
         let shouldCopy = defaults.object(forKey: ScreenCaptureSettingKey.copiesOCRText) == nil
             ? true
