@@ -415,6 +415,7 @@ final class ClipboardMonitor: ObservableObject {
     ) {
         let settings = ClipboardSettings.load()
         guard !containsProtectedPasteboardType(pasteboard),
+              !containsOnlyBrowserMetadataTypes(pasteboard),
               !ClipboardPrivacyPolicy.excludes(
                 bundleIdentifier: sourceBundleIdentifier,
                 excludedBundleIdentifiers: settings.excludedBundleIdentifiers
@@ -562,6 +563,10 @@ final class ClipboardMonitor: ObservableObject {
         }
 
         for type in pasteboard.types ?? [] {
+            guard !isBrowserMetadataPasteboardType(type) else {
+                continue
+            }
+
             if let data = pasteboard.data(forType: type) {
                 return ClipboardItem.make(
                     in: context,
@@ -595,6 +600,15 @@ final class ClipboardMonitor: ObservableObject {
             }
 
             let itemType = uniformType.clipboardItemType
+            guard !isBrowserMetadataPasteboardType(pasteboardType) else {
+                continue
+            }
+
+            if itemType == ClipboardItemType.data,
+               hasReadablePlainTextRepresentation(in: pasteboard) {
+                continue
+            }
+
             guard itemType != ClipboardItemType.image,
                   itemType != ClipboardItemType.pdf,
                   itemType != ClipboardItemType.rtf,
@@ -616,6 +630,14 @@ final class ClipboardMonitor: ObservableObject {
         }
 
         return nil
+    }
+
+    private func hasReadablePlainTextRepresentation(in pasteboard: NSPasteboard) -> Bool {
+        guard let string = pasteboard.string(forType: .string) else {
+            return false
+        }
+
+        return !string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private func findDuplicate(of newItem: ClipboardItem) -> ClipboardItem? {
@@ -641,6 +663,21 @@ final class ClipboardMonitor: ObservableObject {
             "org.nspasteboard.ConcealedType"
         ])
         return pasteboard.types?.contains { protectedTypes.contains($0.rawValue) } == true
+    }
+
+    private func containsOnlyBrowserMetadataTypes(_ pasteboard: NSPasteboard) -> Bool {
+        let pasteboardTypes = pasteboard.types ?? []
+        guard !pasteboardTypes.isEmpty else {
+            return false
+        }
+
+        return pasteboardTypes.allSatisfy(isBrowserMetadataPasteboardType)
+    }
+
+    private func isBrowserMetadataPasteboardType(_ pasteboardType: NSPasteboard.PasteboardType) -> Bool {
+        let identifier = pasteboardType.rawValue
+        return identifier.hasPrefix("org.chromium.internal.")
+            || identifier == "org.chromium.source-url"
     }
 
     private func captureRepresentations(from pasteboard: NSPasteboard, for clipboardItem: ClipboardItem) {
