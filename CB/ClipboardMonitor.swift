@@ -415,7 +415,7 @@ final class ClipboardMonitor: ObservableObject {
     ) {
         let settings = ClipboardSettings.load()
         guard !containsProtectedPasteboardType(pasteboard),
-              !containsOnlyBrowserMetadataTypes(pasteboard),
+              !containsOnlyIgnoredInternalTypes(pasteboard),
               !ClipboardPrivacyPolicy.excludes(
                 bundleIdentifier: sourceBundleIdentifier,
                 excludedBundleIdentifiers: settings.excludedBundleIdentifiers
@@ -563,7 +563,7 @@ final class ClipboardMonitor: ObservableObject {
         }
 
         for type in pasteboard.types ?? [] {
-            guard !isBrowserMetadataPasteboardType(type) else {
+            guard !isIgnoredInternalPasteboardType(type) else {
                 continue
             }
 
@@ -600,7 +600,7 @@ final class ClipboardMonitor: ObservableObject {
             }
 
             let itemType = uniformType.clipboardItemType
-            guard !isBrowserMetadataPasteboardType(pasteboardType) else {
+            guard !isIgnoredInternalPasteboardType(pasteboardType) else {
                 continue
             }
 
@@ -665,19 +665,21 @@ final class ClipboardMonitor: ObservableObject {
         return pasteboard.types?.contains { protectedTypes.contains($0.rawValue) } == true
     }
 
-    private func containsOnlyBrowserMetadataTypes(_ pasteboard: NSPasteboard) -> Bool {
+    private func containsOnlyIgnoredInternalTypes(_ pasteboard: NSPasteboard) -> Bool {
         let pasteboardTypes = pasteboard.types ?? []
         guard !pasteboardTypes.isEmpty else {
             return false
         }
 
-        return pasteboardTypes.allSatisfy(isBrowserMetadataPasteboardType)
+        return pasteboardTypes.allSatisfy(isIgnoredInternalPasteboardType)
     }
 
-    private func isBrowserMetadataPasteboardType(_ pasteboardType: NSPasteboard.PasteboardType) -> Bool {
+    private func isIgnoredInternalPasteboardType(_ pasteboardType: NSPasteboard.PasteboardType) -> Bool {
         let identifier = pasteboardType.rawValue
         return identifier.hasPrefix("org.chromium.internal.")
             || identifier == "org.chromium.source-url"
+            || identifier == "com.apple.IconComposer.layer"
+            || identifier == "com.apple.IconComposer.assets"
     }
 
     private func captureRepresentations(from pasteboard: NSPasteboard, for clipboardItem: ClipboardItem) {

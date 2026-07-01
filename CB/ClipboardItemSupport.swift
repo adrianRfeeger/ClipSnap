@@ -75,11 +75,17 @@ extension ClipboardItem {
         }
 
         if let previewText, !previewText.isEmpty {
+            if type == ClipboardItemType.image,
+               previewText == "Image",
+               let imageSourceTitle {
+                return imageSourceTitle
+            }
+
             return previewText
         }
 
         if type == ClipboardItemType.image {
-            return "Image"
+            return imageSourceTitle ?? "Image"
         }
 
         return utiType ?? "Clipboard Item"
@@ -136,6 +142,18 @@ extension ClipboardItem {
 
     var menuTitle: String {
         displayTitle.truncatedForMenu
+    }
+
+    private var imageSourceTitle: String? {
+        guard type == ClipboardItemType.image,
+              let sourceApp = sourceApp?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !sourceApp.isEmpty,
+              sourceApp != "Screen Capture",
+              sourceApp != "Screen OCR" else {
+            return nil
+        }
+
+        return "Image from \(sourceApp)"
     }
 
     var shouldProtectPreview: Bool {
