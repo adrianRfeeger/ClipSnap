@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import CoreData
 
@@ -32,7 +33,11 @@ struct MenuBarHistoryMenu: View {
                 Button {
                     clipboardMonitor.copyToClipboard(item)
                 } label: {
-                    Label(item.protectedMenuTitle, systemImage: item.systemImageName)
+                    Label {
+                        Text(item.protectedMenuTitle)
+                    } icon: {
+                        MenuBarClipboardItemIcon(item: item)
+                    }
                     Text(item.displayType)
                 }
                 .labelStyle(.titleAndIcon)
@@ -40,6 +45,52 @@ struct MenuBarHistoryMenu: View {
         }
 
         Divider()
+
+        if let errorMessage = screenCaptureService.errorMessage {
+            Label("Capture Error", systemImage: "exclamationmark.triangle")
+            Text(errorMessage)
+                .foregroundStyle(.secondary)
+
+            if screenCaptureService.canOpenScreenRecordingSettings {
+                Button("Open Screen Recording Settings") {
+                    screenCaptureService.openScreenRecordingSettings()
+                }
+            }
+
+            Button("Dismiss Capture Error") {
+                screenCaptureService.errorMessage = nil
+            }
+
+            Divider()
+        }
+
+        if screenCaptureService.isCapturing || screenCaptureService.statusText != nil {
+            MenuBarCaptureStatus(screenCaptureService: screenCaptureService)
+
+            if screenCaptureService.hasActiveRecordingSession {
+                Button("Pause") {
+                    screenCaptureService.pauseRecording()
+                }
+                .disabled(!screenCaptureService.isRecording || screenCaptureService.isRecordingPaused)
+
+                Button("Continue") {
+                    screenCaptureService.resumeRecording()
+                }
+                .disabled(!screenCaptureService.isRecordingPaused)
+
+                Button("Stop") {
+                    screenCaptureService.stopRecording()
+                }
+                .disabled(!screenCaptureService.isRecording && !screenCaptureService.isRecordingPaused)
+
+                Button("Cancel") {
+                    screenCaptureService.cancelRecording()
+                }
+                .disabled(!screenCaptureService.isRecording && !screenCaptureService.isRecordingPaused)
+            }
+
+            Divider()
+        }
 
         Menu("Capture") {
             Button("Text from Region") {
@@ -170,5 +221,83 @@ struct MenuBarHistoryMenu: View {
         Button("Quit ClipSnap") {
             NSApp.terminate(nil)
         }
+    }
+}
+
+private struct MenuBarCaptureStatus: View {
+    @ObservedObject var screenCaptureService: ScreenCaptureService
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            Label(statusTitle(at: context.date), systemImage: statusIconName)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var statusIconName: String {
+        if screenCaptureService.isRecording {
+            return "record.circle"
+        }
+        if screenCaptureService.isRecordingPaused {
+            return "pause.circle"
+        }
+        if screenCaptureService.isWaitingForDelayedCapture {
+            return "timer"
+        }
+        return "camera.viewfinder"
+    }
+
+    private func statusTitle(at date: Date) -> String {
+        if screenCaptureService.isRecording {
+            return "Recording \(formatElapsed(screenCaptureService.recordingElapsed(at: date)))"
+        }
+        if screenCaptureService.isRecordingPaused {
+            return "Paused \(formatElapsed(screenCaptureService.recordingElapsed(at: date)))"
+        }
+        return screenCaptureService.statusText ?? "Capture Active"
+    }
+
+    private func formatElapsed(_ elapsed: TimeInterval) -> String {
+        let totalSeconds = max(0, Int(elapsed.rounded(.down)))
+        let hours = totalSeconds / 3_600
+        let minutes = (totalSeconds % 3_600) / 60
+        let seconds = totalSeconds % 60
+
+        if hours > 0 {
+            return String(format: "%d:%02d:%02d", hours, minutes, seconds)
+        }
+
+        return String(format: "%02d:%02d", minutes, seconds)
+    }
+}
+
+private struct MenuBarClipboardItemIcon: View {
+    @ObservedObject var item: ClipboardItem
+
+    var body: some View {
+        if item.shouldProtectPreview {
+            Image(systemName: "eye.slash.fill")
+        } else if let image = thumbnailImage {
+            Image(nsImage: image)
+                .resizable()
+                .scaledToFill()
+                .frame(width: 16, height: 16)
+                .clipShape(RoundedRectangle(cornerRadius: 3))
+        } else {
+            Image(systemName: item.systemImageName)
+        }
+    }
+
+    private var thumbnailImage: NSImage? {
+        guard item.type == ClipboardItemType.image else {
+            return nil
+        }
+
+        if let thumbnailData = item.thumbnailData,
+           let image = NSImage(data: thumbnailData) {
+            return image
+        }
+
+        return item.image
     }
 }

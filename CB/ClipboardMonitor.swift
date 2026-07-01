@@ -414,13 +414,11 @@ final class ClipboardMonitor: ObservableObject {
         sourceBundleIdentifier: String?
     ) {
         let settings = ClipboardSettings.load()
+        let appRule = settings.appRule(for: sourceBundleIdentifier)
         guard !containsProtectedPasteboardType(pasteboard),
-              !containsOnlyIgnoredInternalTypes(pasteboard),
-              !ClipboardPrivacyPolicy.excludes(
-                bundleIdentifier: sourceBundleIdentifier,
-                excludedBundleIdentifiers: settings.excludedBundleIdentifiers
-              ),
-              let capturedItem = captureItem(from: pasteboard) else {
+              !containsOnlyIgnoredInternalTypes(pasteboard, settings: settings),
+              appRule?.ignoresClipboard != true,
+              let capturedItem = captureItem(from: pasteboard, settings: settings) else {
             return
         }
 
@@ -442,6 +440,8 @@ final class ClipboardMonitor: ObservableObject {
         if capturedItem.isSensitive {
             PersistenceStoreRouting.assign(capturedItem, localOnly: true, in: context)
         }
+
+        apply(appRule, to: capturedItem)
 
         do {
             var itemToIndex = capturedItem
@@ -468,7 +468,10 @@ final class ClipboardMonitor: ObservableObject {
         }
     }
 
-    private func captureItem(from pasteboard: NSPasteboard) -> ClipboardItem? {
+    private func captureItem(
+        from pasteboard: NSPasteboard,
+        settings: ClipboardSettings
+    ) -> ClipboardItem? {
         if let fileURL = pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true])?.first as? URL {
             return ClipboardItem.make(
                 in: context,
@@ -546,7 +549,7 @@ final class ClipboardMonitor: ObservableObject {
             )
         }
 
-        if let item = captureTypedData(from: pasteboard) {
+        if let item = captureTypedData(from: pasteboard, settings: settings) {
             return item
         }
 
@@ -563,7 +566,7 @@ final class ClipboardMonitor: ObservableObject {
         }
 
         for type in pasteboard.types ?? [] {
-            guard !isIgnoredInternalPasteboardType(type) else {
+            guard !isIgnoredInternalPasteboardType(type, settings: settings) else {
                 continue
             }
 
@@ -592,7 +595,36 @@ final class ClipboardMonitor: ObservableObject {
         item.updateContentIdentity()
     }
 
-    private func captureTypedData(from pasteboard: NSPasteboard) -> ClipboardItem? {
+    private func apply(_ appRule: ClipboardAppRule?, to item: ClipboardItem) {
+        guard let appRule else {
+            return
+        }
+
+        if !appRule.automaticTags.isEmpty {
+            var tags = Set(item.tags)
+            appRule.automaticTags
+                .components(separatedBy: CharacterSet(charactersIn: ",\n"))
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+                .forEach { tags.insert($0) }
+            item.tagsText = tags.sorted().joined(separator: ", ")
+        }
+
+        if appRule.concealsPreviews {
+            item.isSensitive = true
+        }
+
+        if appRule.keepsLocalOnly || appRule.concealsPreviews || item.isSensitive {
+            PersistenceStoreRouting.assign(item, localOnly: true, in: context)
+        }
+
+        item.updateContentIdentity()
+    }
+
+    private func captureTypedData(
+        from pasteboard: NSPasteboard,
+        settings: ClipboardSettings
+    ) -> ClipboardItem? {
         for pasteboardType in pasteboard.types ?? [] {
             guard let data = pasteboard.data(forType: pasteboardType),
                   let uniformType = UTType(pasteboardType.rawValue) else {
@@ -600,7 +632,7 @@ final class ClipboardMonitor: ObservableObject {
             }
 
             let itemType = uniformType.clipboardItemType
-            guard !isIgnoredInternalPasteboardType(pasteboardType) else {
+            guard !isIgnoredInternalPasteboardType(pasteboardType, settings: settings) else {
                 continue
             }
 
@@ -665,21 +697,41 @@ final class ClipboardMonitor: ObservableObject {
         return pasteboard.types?.contains { protectedTypes.contains($0.rawValue) } == true
     }
 
-    private func containsOnlyIgnoredInternalTypes(_ pasteboard: NSPasteboard) -> Bool {
+    private func containsOnlyIgnoredInternalTypes(
+        _ pasteboard: NSPasteboard,
+        settings: ClipboardSettings
+    ) -> Bool {
+        guard settings.ignoresInternalPasteboardTypes else {
+            return false
+        }
+
         let pasteboardTypes = pasteboard.types ?? []
         guard !pasteboardTypes.isEmpty else {
             return false
         }
 
-        return pasteboardTypes.allSatisfy(isIgnoredInternalPasteboardType)
+        return pasteboardTypes.allSatisfy {
+            isIgnoredInternalPasteboardType($0, settings: settings)
+        }
     }
 
-    private func isIgnoredInternalPasteboardType(_ pasteboardType: NSPasteboard.PasteboardType) -> Bool {
+    private func isIgnoredInternalPasteboardType(
+        _ pasteboardType: NSPasteboard.PasteboardType,
+        settings: ClipboardSettings
+    ) -> Bool {
+        guard settings.ignoresInternalPasteboardTypes else {
+            return false
+        }
+
         let identifier = pasteboardType.rawValue
-        return identifier.hasPrefix("org.chromium.internal.")
-            || identifier == "org.chromium.source-url"
-            || identifier == "com.apple.IconComposer.layer"
-            || identifier == "com.apple.IconComposer.assets"
+        return settings.ignoredPasteboardTypes.contains { ignoredIdentifier in
+            if ignoredIdentifier.hasSuffix("*") {
+                let prefix = String(ignoredIdentifier.dropLast())
+                return identifier.hasPrefix(prefix)
+            }
+
+            return identifier == ignoredIdentifier
+        }
     }
 
     private func captureRepresentations(from pasteboard: NSPasteboard, for clipboardItem: ClipboardItem) {

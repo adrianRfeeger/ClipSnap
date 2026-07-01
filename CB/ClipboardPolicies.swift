@@ -164,6 +164,7 @@ struct ClipboardRetentionItem: Sendable {
     let isPinned: Bool
     let isFavorite: Bool
     let isSensitive: Bool
+    let sourceBundleIdentifier: String?
 
     init(
         id: UUID,
@@ -172,7 +173,8 @@ struct ClipboardRetentionItem: Sendable {
         byteCount: Int64,
         isPinned: Bool,
         isFavorite: Bool,
-        isSensitive: Bool = false
+        isSensitive: Bool = false,
+        sourceBundleIdentifier: String? = nil
     ) {
         self.id = id
         self.type = type
@@ -181,6 +183,7 @@ struct ClipboardRetentionItem: Sendable {
         self.isPinned = isPinned
         self.isFavorite = isFavorite
         self.isSensitive = isSensitive
+        self.sourceBundleIdentifier = sourceBundleIdentifier
     }
 }
 
@@ -207,7 +210,10 @@ enum ClipboardRetentionPolicy {
         }
 
         for item in sortedItems where !identifiers.contains(item.id) && !isProtected(item) {
-            let retentionDays = settings.retentionDays(for: item.type)
+            let retentionDays = settings.retentionDays(
+                for: item.type,
+                sourceBundleIdentifier: item.sourceBundleIdentifier
+            )
             guard retentionDays > 0,
                   let cutoff = Calendar.current.date(
                     byAdding: .day,

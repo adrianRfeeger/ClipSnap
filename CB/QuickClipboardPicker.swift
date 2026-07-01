@@ -1,5 +1,9 @@
+import AppKit
+import AVFoundation
 import CoreData
+import PDFKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct QuickClipboardPicker: View {
     static let sceneID = "quick-clipboard-picker"
@@ -18,10 +22,13 @@ struct QuickClipboardPicker: View {
 
     @State private var searchText = ""
     @State private var selectedIndex = 0
+    @State private var selectedFilterIdentifier = ""
     @FocusState private var searchIsFocused: Bool
+    @AppStorage(ClipboardSettingKey.savedFilters)
+    private var savedFiltersData = ClipboardSettings.formattedSavedFilters([])
 
     private var filteredItems: [ClipboardItem] {
-        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let query = combinedQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         let parsedQuery = ClipboardSearchQuery(query)
         let values = items.filter { item in
             !item.isArchived && parsedQuery.matches(item)
@@ -29,11 +36,64 @@ struct QuickClipboardPicker: View {
         return Array(values.prefix(40))
     }
 
+    private var savedFilters: [ClipboardSavedFilter] {
+        ClipboardSettings.parseSavedFilters(savedFiltersData)
+    }
+
+    private var availableFilters: [ClipboardSavedFilter] {
+        ClipboardSavedFilter.builtIns + savedFilters
+    }
+
+    private var selectedFilter: ClipboardSavedFilter? {
+        availableFilters.first { $0.id.uuidString == selectedFilterIdentifier }
+    }
+
+    private var combinedQuery: String {
+        [selectedFilter?.query, searchText]
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 10) {
                 Image(systemName: "magnifyingglass")
                     .foregroundStyle(.secondary)
+
+                Menu {
+                    Button("All") {
+                        selectedFilterIdentifier = ""
+                    }
+
+                    if !availableFilters.isEmpty {
+                        Divider()
+                    }
+
+                    Section("Built In") {
+                        ForEach(ClipboardSavedFilter.builtIns) { filter in
+                            Button(filter.name) {
+                                selectedFilterIdentifier = filter.id.uuidString
+                            }
+                        }
+                    }
+
+                    if !savedFilters.isEmpty {
+                        Divider()
+                        Section("Saved") {
+                            ForEach(savedFilters) { filter in
+                                Button(filter.name) {
+                                    selectedFilterIdentifier = filter.id.uuidString
+                                }
+                            }
+                        }
+                    }
+                } label: {
+                    Label(selectedFilter?.name ?? "All", systemImage: "line.3.horizontal.decrease.circle")
+                        .labelStyle(.titleAndIcon)
+                }
+                .menuStyle(.button)
+                .fixedSize()
 
                 TextField("Search clipboard history", text: $searchText)
                     .textFieldStyle(.plain)
@@ -56,7 +116,7 @@ struct QuickClipboardPicker: View {
             Divider()
 
             if filteredItems.isEmpty {
-                ContentUnavailableView.search(text: searchText)
+                ContentUnavailableView.search(text: combinedQuery)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ScrollViewReader { proxy in
@@ -67,9 +127,7 @@ struct QuickClipboardPicker: View {
                                 copySelection()
                             } label: {
                                 HStack(spacing: 10) {
-                                    Image(systemName: item.systemImageName)
-                                        .foregroundStyle(.secondary)
-                                        .frame(width: 20)
+                                    QuickClipboardThumbnail(item: item)
 
                                     VStack(alignment: .leading, spacing: 2) {
                                         Text(item.shouldProtectPreview ? "Sensitive Content" : item.displayTitle)
@@ -118,7 +176,7 @@ struct QuickClipboardPicker: View {
                 Text("↩ Copy")
                 Text("esc Close")
                 Spacer()
-                Text("\(filteredItems.count) items")
+                Text(selectedFilter?.name ?? "\(filteredItems.count) items")
             }
             .font(.caption)
             .foregroundStyle(.secondary)
@@ -132,6 +190,9 @@ struct QuickClipboardPicker: View {
             searchIsFocused = true
         }
         .onChange(of: searchText) {
+            selectedIndex = 0
+        }
+        .onChange(of: selectedFilterIdentifier) {
             selectedIndex = 0
         }
         .onExitCommand {
@@ -161,5 +222,114 @@ struct QuickClipboardPicker: View {
 
         clipboardMonitor.copyToClipboard(filteredItems[selectedIndex])
         dismissWindow(id: Self.sceneID)
+    }
+}
+
+private struct QuickClipboardThumbnail: View {
+    @ObservedObject var item: ClipboardItem
+    @State private var generatedVideoThumbnail: NSImage?
+
+    var body: some View {
+        Group {
+            if item.shouldProtectPreview {
+                symbol("eye.slash.fill")
+            } else if let image = thumbnailImage {
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: 34, height: 34)
+                    .clipShape(RoundedRectangle(cornerRadius: 5))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 5)
+                            .stroke(.separator.opacity(0.5), lineWidth: 0.5)
+                    }
+            } else {
+                symbol(item.systemImageName)
+            }
+        }
+        .frame(width: 38, height: 38)
+        .task(id: item.objectID) {
+            generatedVideoThumbnail = nil
+            guard item.type == ClipboardItemType.video,
+                  let data = item.rawData ?? item.sortedRepresentations.compactMap(\.data).first else {
+                return
+            }
+
+            generatedVideoThumbnail = await makeVideoThumbnail(
+                from: data,
+                utiIdentifier: item.utiType
+            )
+        }
+    }
+
+    private var thumbnailImage: NSImage? {
+        switch item.type {
+        case ClipboardItemType.image:
+            if let thumbnailData = item.thumbnailData,
+               let image = NSImage(data: thumbnailData) {
+                return image
+            }
+            return item.image
+        case ClipboardItemType.pdf:
+            return pdfThumbnail
+        case ClipboardItemType.file:
+            return fileIcon
+        case ClipboardItemType.video:
+            return generatedVideoThumbnail
+        default:
+            return nil
+        }
+    }
+
+    private var pdfThumbnail: NSImage? {
+        guard let rawData = item.rawData,
+              let document = PDFDocument(data: rawData),
+              let page = document.page(at: 0) else {
+            return nil
+        }
+
+        return page.thumbnail(of: NSSize(width: 68, height: 68), for: .cropBox)
+    }
+
+    private var fileIcon: NSImage? {
+        guard let plainText = item.plainText,
+              let url = URL(string: plainText),
+              url.isFileURL else {
+            return nil
+        }
+
+        return NSWorkspace.shared.icon(forFile: url.path)
+    }
+
+    private func makeVideoThumbnail(from data: Data, utiIdentifier: String?) async -> NSImage? {
+        let fileExtension = utiIdentifier.flatMap { UTType($0)?.preferredFilenameExtension } ?? "mov"
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ClipSnap Quick Preview \(UUID().uuidString)")
+            .appendingPathExtension(fileExtension)
+        defer {
+            try? FileManager.default.removeItem(at: url)
+        }
+
+        do {
+            try data.write(to: url, options: .atomic)
+            let asset = AVURLAsset(url: url)
+            let generator = AVAssetImageGenerator(asset: asset)
+            generator.appliesPreferredTrackTransform = true
+            generator.maximumSize = CGSize(width: 120, height: 120)
+            let image = try await generator.image(
+                at: CMTime(seconds: 0.1, preferredTimescale: 600)
+            ).image
+            return NSImage(cgImage: image, size: NSSize(width: image.width, height: image.height))
+        } catch {
+            return nil
+        }
+    }
+
+    private func symbol(_ name: String) -> some View {
+        Image(systemName: name)
+            .font(.system(size: 17, weight: .medium))
+            .foregroundStyle(.secondary)
+            .frame(width: 34, height: 34)
+            .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 5))
     }
 }

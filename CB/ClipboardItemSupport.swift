@@ -76,16 +76,36 @@ extension ClipboardItem {
 
         if let previewText, !previewText.isEmpty {
             if type == ClipboardItemType.image,
-               previewText == "Image",
-               let imageSourceTitle {
-                return imageSourceTitle
+               previewText == "Image" {
+                return imageTitle
+            }
+
+            if type == ClipboardItemType.file,
+               let sourceTitle = sourceAwareTitle(prefix: "File") {
+                return "\(previewText) from \(sourceTitle)"
+            }
+
+            if (type == ClipboardItemType.audio || type == ClipboardItemType.video),
+               isGenericPreview(previewText),
+               let sourceTitle = sourceAwareTitle(prefix: displayType) {
+                return sourceTitle
             }
 
             return previewText
         }
 
         if type == ClipboardItemType.image {
-            return imageSourceTitle ?? "Image"
+            return imageTitle
+        }
+
+        if type == ClipboardItemType.file,
+           let sourceTitle = sourceAwareTitle(prefix: "File") {
+            return sourceTitle
+        }
+
+        if (type == ClipboardItemType.audio || type == ClipboardItemType.video),
+           let sourceTitle = sourceAwareTitle(prefix: displayType) {
+            return sourceTitle
         }
 
         return utiType ?? "Clipboard Item"
@@ -144,6 +164,14 @@ extension ClipboardItem {
         displayTitle.truncatedForMenu
     }
 
+    private var imageTitle: String {
+        let baseTitle = imageSourceTitle ?? "Image"
+        guard let imageDimensionsDescription else {
+            return baseTitle
+        }
+        return "\(baseTitle) - \(imageDimensionsDescription)"
+    }
+
     private var imageSourceTitle: String? {
         guard type == ClipboardItemType.image,
               let sourceApp = sourceApp?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -154,6 +182,40 @@ extension ClipboardItem {
         }
 
         return "Image from \(sourceApp)"
+    }
+
+    private var imageDimensionsDescription: String? {
+        guard type == ClipboardItemType.image,
+              let image else {
+            return nil
+        }
+
+        let width = Int(round(image.size.width))
+        let height = Int(round(image.size.height))
+        guard width > 0, height > 0 else {
+            return nil
+        }
+
+        return "\(width)x\(height)"
+    }
+
+    private func sourceAwareTitle(prefix: String) -> String? {
+        guard let sourceApp = sourceApp?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !sourceApp.isEmpty,
+              sourceApp != "Screen Capture",
+              sourceApp != "Screen Recording",
+              sourceApp != "Screen OCR" else {
+            return nil
+        }
+
+        return "\(prefix) from \(sourceApp)"
+    }
+
+    private func isGenericPreview(_ value: String) -> Bool {
+        value == displayType
+            || value == "Audio"
+            || value == "Video"
+            || value == "Screen Recording"
     }
 
     var shouldProtectPreview: Bool {

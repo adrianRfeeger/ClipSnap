@@ -74,9 +74,15 @@ final class ScreenCaptureService: NSObject, ObservableObject {
     private var pickerPurpose: PickerPurpose?
     private var pickerDelaySeconds = 0
     private var recordingSession: ScreenRecordingSession?
+    private var recordingElapsedBeforeActiveSegment: TimeInterval = 0
+    private var activeRecordingStartedAt: Date?
 
     var hasScreenRecordingAccess: Bool {
         CGPreflightScreenCaptureAccess()
+    }
+
+    var hasActiveRecordingSession: Bool {
+        recordingSession != nil
     }
 
     init(clipboardMonitor: ClipboardMonitor) {
@@ -87,6 +93,18 @@ final class ScreenCaptureService: NSObject, ObservableObject {
 
     deinit {
         picker.remove(self)
+    }
+
+    func recordingElapsed(at date: Date = Date()) -> TimeInterval {
+        guard hasActiveRecordingSession else {
+            return 0
+        }
+
+        guard let activeRecordingStartedAt, isRecording else {
+            return recordingElapsedBeforeActiveSegment
+        }
+
+        return recordingElapsedBeforeActiveSegment + max(0, date.timeIntervalSince(activeRecordingStartedAt))
     }
 
     func capture(_ mode: ScreenCaptureMode, delayed: Bool = false) {
@@ -381,6 +399,7 @@ final class ScreenCaptureService: NSObject, ObservableObject {
             isRecording = true
             isRecordingPaused = false
             isCapturing = true
+            startRecordingTimer()
             statusText = "Recording desktop"
             picker.isActive = false
         } catch {
@@ -407,6 +426,7 @@ final class ScreenCaptureService: NSObject, ObservableObject {
             isRecording = true
             isRecordingPaused = false
             isCapturing = true
+            startRecordingTimer()
             statusText = "Recording desktop"
             errorMessage = "Audio capture could not start, so ClipSnap started a screen-only recording. \(originalError.localizedDescription)"
             picker.isActive = false
@@ -512,6 +532,7 @@ final class ScreenCaptureService: NSObject, ObservableObject {
 
         statusText = "Pausing recording…"
         do {
+            pauseRecordingTimer()
             try await stopActiveRecordingSegment(for: session)
             isRecording = false
             isRecordingPaused = true
@@ -528,6 +549,7 @@ final class ScreenCaptureService: NSObject, ObservableObject {
             session.activeSegment = try await startRecordingSegment(for: session)
             isRecording = true
             isRecordingPaused = false
+            resumeRecordingTimer()
             statusText = "Recording desktop"
         } catch {
             cleanUpRecordingFiles(for: session)
@@ -543,6 +565,7 @@ final class ScreenCaptureService: NSObject, ObservableObject {
         }
 
         recordingSession = nil
+        pauseRecordingTimer()
         isRecording = false
         isRecordingPaused = false
         statusText = "Saving recording…"
@@ -565,6 +588,7 @@ final class ScreenCaptureService: NSObject, ObservableObject {
             try? FileManager.default.removeItem(at: outputURL)
             isCapturing = false
             statusText = nil
+            resetRecordingTimer()
         } catch {
             cleanUpRecordingFiles(for: session)
             failCapture(error)
@@ -577,10 +601,12 @@ final class ScreenCaptureService: NSObject, ObservableObject {
             isRecording = false
             isRecordingPaused = false
             statusText = nil
+            resetRecordingTimer()
             return
         }
 
         recordingSession = nil
+        resetRecordingTimer()
         isRecording = false
         isRecordingPaused = false
         statusText = "Cancelling recording…"
@@ -591,6 +617,29 @@ final class ScreenCaptureService: NSObject, ObservableObject {
         cleanUpRecordingFiles(for: session)
         isCapturing = false
         statusText = nil
+    }
+
+    private func startRecordingTimer() {
+        recordingElapsedBeforeActiveSegment = 0
+        activeRecordingStartedAt = Date()
+    }
+
+    private func pauseRecordingTimer() {
+        guard let activeRecordingStartedAt else {
+            return
+        }
+
+        recordingElapsedBeforeActiveSegment += max(0, Date().timeIntervalSince(activeRecordingStartedAt))
+        self.activeRecordingStartedAt = nil
+    }
+
+    private func resumeRecordingTimer() {
+        activeRecordingStartedAt = Date()
+    }
+
+    private func resetRecordingTimer() {
+        recordingElapsedBeforeActiveSegment = 0
+        activeRecordingStartedAt = nil
     }
 
     private func recordingStreamConfiguration(
@@ -801,6 +850,7 @@ final class ScreenCaptureService: NSObject, ObservableObject {
             isCapturing = false
             isWaitingForDelayedCapture = false
             statusText = nil
+            resetRecordingTimer()
             return
         }
         errorMessage = error.localizedDescription
@@ -810,6 +860,7 @@ final class ScreenCaptureService: NSObject, ObservableObject {
         isCapturing = false
         isWaitingForDelayedCapture = false
         statusText = nil
+        resetRecordingTimer()
         picker.isActive = false
     }
 
@@ -830,6 +881,7 @@ final class ScreenCaptureService: NSObject, ObservableObject {
         isWaitingForDelayedCapture = false
         isCapturing = false
         statusText = nil
+        resetRecordingTimer()
     }
 
     func openScreenRecordingSettings() {

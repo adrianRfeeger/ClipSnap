@@ -25,8 +25,20 @@ struct ContentView: View {
     @State private var selectedFilter = ClipboardFilter.all
     @State private var isDropTargeted = false
     @State private var isEditingBatchMetadata = false
+    @State private var isManagingSavedFilters = false
+    @State private var pendingSavedFilterQuery = ""
     @State private var imageEditingItem: ClipboardItem?
     @State private var exportErrorMessage: String?
+    @AppStorage(ClipboardSettingKey.hasCompletedSetup)
+    private var hasCompletedSetup = false
+    @AppStorage(ClipboardSettingKey.savedFilters)
+    private var savedFiltersData = ClipboardSettings.formattedSavedFilters([])
+    @AppStorage(ClipboardSettingKey.ignoredPasteboardTypes)
+    private var ignoredPasteboardTypes = ClipboardSettings.formattedPasteboardTypes(
+        ClipboardSettings.defaults.ignoredPasteboardTypes
+    )
+    @AppStorage(ClipboardSettingKey.excludedBundleIdentifiers)
+    private var excludedBundleIdentifiers = ""
 
     private var filteredItems: [ClipboardItem] {
         let query = ClipboardSearchQuery(searchText)
@@ -47,6 +59,10 @@ struct ContentView: View {
 
     private var selectedItems: [ClipboardItem] {
         items.filter { selectedItemIdentifiers.contains($0.selectionIdentifier) }
+    }
+
+    private var savedFilters: [ClipboardSavedFilter] {
+        ClipboardSettings.parseSavedFilters(savedFiltersData)
     }
 
     var body: some View {
@@ -111,6 +127,9 @@ struct ContentView: View {
                 Text("Favorites").searchCompletion("favorite:true")
                 Text("This week").searchCompletion("after:week")
                 Text("Archived").searchCompletion("archived:true")
+                ForEach(ClipboardSavedFilter.builtIns) { filter in
+                    Text(filter.name).searchCompletion(filter.query)
+                }
             }
             .toolbar {
                 ToolbarItem {
@@ -290,6 +309,44 @@ struct ContentView: View {
                     }
                     .pickerStyle(.menu)
                 }
+
+                ToolbarItem {
+                    Menu {
+                        Section("Built In") {
+                            ForEach(ClipboardSavedFilter.builtIns) { filter in
+                                Button(filter.name) {
+                                    applySavedFilter(filter)
+                                }
+                            }
+                        }
+
+                        if !savedFilters.isEmpty {
+                            Divider()
+                            Section("Saved") {
+                                ForEach(savedFilters) { filter in
+                                    Button(filter.name) {
+                                        applySavedFilter(filter)
+                                    }
+                                }
+                            }
+                        }
+
+                        Divider()
+
+                        Button("Save Current Search…") {
+                            pendingSavedFilterQuery = searchText
+                            isManagingSavedFilters = true
+                        }
+                        .disabled(searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+                        Button("Manage Filters…") {
+                            pendingSavedFilterQuery = ""
+                            isManagingSavedFilters = true
+                        }
+                    } label: {
+                        Label("Saved Filters", systemImage: "line.3.horizontal.decrease.circle")
+                    }
+                }
             }
         } detail: {
             if let selectedItem {
@@ -326,6 +383,12 @@ struct ContentView: View {
                     },
                     editImageAction: {
                         imageEditingItem = selectedItem
+                    },
+                    ignoreTypeAction: {
+                        ignorePrimaryPasteboardType(for: selectedItem)
+                    },
+                    ignoreAppAction: {
+                        ignoreSourceApplication(for: selectedItem)
                     },
                     deleteAction: {
                         delete(selectedItem)
@@ -388,6 +451,29 @@ struct ContentView: View {
                 saveContext()
                 isEditingBatchMetadata = false
             }
+        }
+        .sheet(
+            isPresented: Binding(
+                get: { !hasCompletedSetup && !AppLaunchConfiguration.isUITesting },
+                set: { isPresented in
+                    if !isPresented {
+                        hasCompletedSetup = true
+                    }
+                }
+            )
+        ) {
+            ClipSnapSetupView(
+                cloudSyncMonitor: cloudSyncMonitor,
+                screenCaptureService: screenCaptureService
+            ) {
+                hasCompletedSetup = true
+            }
+        }
+        .sheet(isPresented: $isManagingSavedFilters) {
+            SavedFiltersManager(
+                filtersData: $savedFiltersData,
+                initialQuery: pendingSavedFilterQuery
+            )
         }
         .sheet(item: $imageEditingItem) { item in
             if let image = item.image {
@@ -478,6 +564,30 @@ struct ContentView: View {
         }
         viewContext.delete(item)
         saveContext()
+    }
+
+    private func ignorePrimaryPasteboardType(for item: ClipboardItem) {
+        guard let utiType = item.utiType?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !utiType.isEmpty else {
+            return
+        }
+
+        var ignoredTypes = ClipboardSettings.parsePasteboardTypes(ignoredPasteboardTypes)
+        ignoredTypes.insert(utiType)
+        ignoredPasteboardTypes = ClipboardSettings.formattedPasteboardTypes(ignoredTypes)
+    }
+
+    private func ignoreSourceApplication(for item: ClipboardItem) {
+        guard let bundleIdentifier = item.sourceBundleIdentifier?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased(),
+              !bundleIdentifier.isEmpty else {
+            return
+        }
+
+        var identifiers = ClipboardSettings.parseBundleIdentifiers(excludedBundleIdentifiers)
+        identifiers.insert(bundleIdentifier)
+        excludedBundleIdentifiers = ClipboardSettings.formattedBundleIdentifiers(identifiers)
     }
 
     private func delete(_ items: [ClipboardItem]) {
@@ -620,6 +730,12 @@ struct ContentView: View {
         delete(offsets.map { filteredItems[$0] })
     }
 
+    private func applySavedFilter(_ filter: ClipboardSavedFilter) {
+        selectedFilter = .all
+        searchText = filter.query
+        selectedItemIdentifiers = []
+    }
+
     private func saveContext() {
         let changedItems = (viewContext.insertedObjects.union(viewContext.updatedObjects))
             .compactMap { $0 as? ClipboardItem }
@@ -734,6 +850,8 @@ private struct ClipboardDetailView: View {
     let saveTextAction: (String) -> Void
     let recognizeTextAction: () -> Void
     let editImageAction: () -> Void
+    let ignoreTypeAction: () -> Void
+    let ignoreAppAction: () -> Void
     let deleteAction: () -> Void
     @AppStorage("showsClipboardItemMetadata")
     private var showsItemMetadata = true
@@ -973,6 +1091,14 @@ private struct ClipboardDetailView: View {
                 }
             }
 
+            if let appRuleDescription {
+                GridRow {
+                    Text("App Rule")
+                        .foregroundStyle(.secondary)
+                    Text(appRuleDescription)
+                }
+            }
+
             if let recognizedText = item.recognizedText, !recognizedText.isEmpty {
                 GridRow {
                     Text("Recognized Text")
@@ -991,8 +1117,250 @@ private struct ClipboardDetailView: View {
                         .textSelection(.enabled)
                 }
             }
+
+            if showsCaptureDiagnostics {
+                GridRow {
+                    Text("Why Captured")
+                        .foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(captureDiagnosticsText)
+                            .fixedSize(horizontal: false, vertical: true)
+
+                        HStack {
+                            Button("Ignore This Type", action: ignoreTypeAction)
+                                .disabled(item.utiType?.isEmpty != false)
+
+                            Button("Ignore This App", action: ignoreAppAction)
+                                .disabled(item.sourceBundleIdentifier?.isEmpty != false)
+                        }
+                    }
+                }
+            }
         }
         .font(.caption)
+    }
+
+    private var showsCaptureDiagnostics: Bool {
+        item.type == ClipboardItemType.unknown || item.type == ClipboardItemType.data
+    }
+
+    private var appRuleDescription: String? {
+        guard let rule = ClipboardSettings.load().appRule(for: item.sourceBundleIdentifier) else {
+            return nil
+        }
+
+        var descriptions: [String] = []
+        if rule.ignoresClipboard {
+            descriptions.append("Ignore future clipboard changes")
+        }
+        if rule.keepsLocalOnly {
+            descriptions.append("Keep local only")
+        }
+        if rule.concealsPreviews {
+            descriptions.append("Conceal previews")
+        }
+        if !rule.automaticTags.isEmpty {
+            descriptions.append("Tags: \(rule.automaticTags)")
+        }
+        if rule.retentionDays >= 0 {
+            descriptions.append(rule.retentionDays == 0 ? "Never expire" : "Retain \(rule.retentionDays) days")
+        }
+
+        return descriptions.isEmpty ? nil : descriptions.joined(separator: " - ")
+    }
+
+    private var captureDiagnosticsText: String {
+        let format = item.utiType ?? "an unknown pasteboard type"
+        let source = item.sourceApp ?? "the source app"
+        let representationCount = item.sortedRepresentations.count
+        return "ClipSnap did not find a standard previewable representation, so it retained \(format) from \(source). \(representationCount) stored representation\(representationCount == 1 ? "" : "s") can still be restored when copied back."
+    }
+}
+
+private struct SavedFiltersManager: View {
+    @Environment(\.dismiss) private var dismiss
+    @Binding var filtersData: String
+    let initialQuery: String
+
+    @State private var filters: [ClipboardSavedFilter] = []
+    @State private var newFilterName = ""
+    @State private var newFilterQuery = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                Text("Saved Filters")
+                    .font(.title2.weight(.semibold))
+
+                Spacer()
+
+                Button("Done") {
+                    saveFilters()
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+
+            GroupBox("Built In") {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(ClipboardSavedFilter.builtIns) { filter in
+                        LabeledContent(filter.name) {
+                            Text(filter.query)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+
+            GroupBox("Custom") {
+                VStack(spacing: 10) {
+                    HStack {
+                        TextField("Name", text: $newFilterName)
+                        TextField("Query", text: $newFilterQuery)
+                        Button("Add") {
+                            addFilter()
+                        }
+                        .disabled(!canAddFilter)
+                    }
+
+                    if filters.isEmpty {
+                        ContentUnavailableView(
+                            "No Saved Filters",
+                            systemImage: "line.3.horizontal.decrease.circle",
+                            description: Text("Save frequent searches so they are one click away.")
+                        )
+                        .frame(minHeight: 120)
+                    } else {
+                        List {
+                            ForEach(filters) { filter in
+                                SavedFilterRow(
+                                    filter: binding(for: filter),
+                                    moveUpAction: { move(filter, by: -1) },
+                                    moveDownAction: { move(filter, by: 1) },
+                                    deleteAction: { delete(filter) }
+                                )
+                            }
+                        }
+                        .frame(minHeight: 180)
+                    }
+                }
+            }
+
+            Text("Filters use the same syntax as search, including app:, type:, tag:, favorite:, after:, sync:, and size:.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding(20)
+        .frame(minWidth: 680, minHeight: 460)
+        .onAppear {
+            filters = ClipboardSettings.parseSavedFilters(filtersData)
+            newFilterQuery = initialQuery
+            newFilterName = initialQuery.isEmpty ? "" : defaultFilterName(for: initialQuery)
+        }
+        .onDisappear(perform: saveFilters)
+    }
+
+    private var canAddFilter: Bool {
+        let name = newFilterName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let query = newFilterQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !name.isEmpty
+            && !query.isEmpty
+            && !filters.contains { $0.name.localizedCaseInsensitiveCompare(name) == .orderedSame }
+    }
+
+    private func addFilter() {
+        guard canAddFilter else {
+            return
+        }
+
+        filters.append(
+            ClipboardSavedFilter(
+                name: newFilterName,
+                query: newFilterQuery
+            ).normalized
+        )
+        newFilterName = ""
+        newFilterQuery = ""
+        saveFilters()
+    }
+
+    private func binding(for filter: ClipboardSavedFilter) -> Binding<ClipboardSavedFilter> {
+        Binding {
+            filters.first(where: { $0.id == filter.id }) ?? filter
+        } set: { updatedFilter in
+            guard let index = filters.firstIndex(where: { $0.id == filter.id }) else {
+                return
+            }
+            filters[index] = updatedFilter.normalized
+            saveFilters()
+        }
+    }
+
+    private func move(_ filter: ClipboardSavedFilter, by offset: Int) {
+        guard let sourceIndex = filters.firstIndex(where: { $0.id == filter.id }) else {
+            return
+        }
+
+        let destinationIndex = sourceIndex + offset
+        guard filters.indices.contains(destinationIndex) else {
+            return
+        }
+
+        filters.swapAt(sourceIndex, destinationIndex)
+        saveFilters()
+    }
+
+    private func delete(_ filter: ClipboardSavedFilter) {
+        filters.removeAll { $0.id == filter.id }
+        saveFilters()
+    }
+
+    private func saveFilters() {
+        filtersData = ClipboardSettings.formattedSavedFilters(filters)
+    }
+
+    private func defaultFilterName(for query: String) -> String {
+        if let builtIn = ClipboardSavedFilter.builtIns.first(where: { $0.query == query }) {
+            return builtIn.name
+        }
+
+        return "Saved Search"
+    }
+}
+
+private struct SavedFilterRow: View {
+    @Binding var filter: ClipboardSavedFilter
+    let moveUpAction: () -> Void
+    let moveDownAction: () -> Void
+    let deleteAction: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            TextField("Name", text: $filter.name)
+                .textFieldStyle(.roundedBorder)
+
+            TextField("Query", text: $filter.query)
+                .textFieldStyle(.roundedBorder)
+
+            Button(action: moveUpAction) {
+                Image(systemName: "chevron.up")
+            }
+            .buttonStyle(.borderless)
+            .help("Move Up")
+
+            Button(action: moveDownAction) {
+                Image(systemName: "chevron.down")
+            }
+            .buttonStyle(.borderless)
+            .help("Move Down")
+
+            Button(role: .destructive, action: deleteAction) {
+                Image(systemName: "trash")
+            }
+            .buttonStyle(.borderless)
+            .help("Delete")
+        }
+        .padding(.vertical, 3)
     }
 }
 

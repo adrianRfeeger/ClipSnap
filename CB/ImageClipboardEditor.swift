@@ -25,11 +25,15 @@ struct ImageClipboardEditor: View {
     @State private var fillsShape = false
     @State private var lineWidth: Double = 5
     @State private var textSize: Double = 24
+    @State private var textAlignment = ImageAnnotationTextAlignment.left
     @State private var annotationText = ""
     @State private var annotations: [ImageAnnotation] = []
     @State private var selectedAnnotationID: UUID?
     @State private var annotationDragSnapshot: ImageAnnotation?
     @State private var activeAnnotationHandle: AnnotationHandle?
+    @State private var undoStack: [ImageEditorSnapshot] = []
+    @State private var redoStack: [ImageEditorSnapshot] = []
+    @State private var copiedAnnotation: ImageAnnotation?
     @FocusState private var annotationTextIsFocused: Bool
 
     init(image: NSImage, saveAction: @escaping (Data) -> Void) {
@@ -102,15 +106,34 @@ struct ImageClipboardEditor: View {
             .onChange(of: textSize) {
                 updateSelectedAnnotation()
             }
+            .onChange(of: textAlignment) {
+                updateSelectedAnnotation()
+            }
             .onChange(of: annotationText) {
                 updateSelectedAnnotation()
             }
+            .onDeleteCommand {
+                deleteSelectedAnnotation()
+            }
+            .onMoveCommand(perform: moveSelectedAnnotation)
 
             HStack {
                 Text(statusText)
                     .foregroundStyle(.secondary)
 
                 Spacer()
+
+                Button("Undo") {
+                    undo()
+                }
+                .disabled(undoStack.isEmpty)
+                .keyboardShortcut("z", modifiers: .command)
+
+                Button("Redo") {
+                    redo()
+                }
+                .disabled(redoStack.isEmpty)
+                .keyboardShortcut("z", modifiers: [.command, .shift])
 
                 Button("Cancel") {
                     dismiss()
@@ -195,7 +218,8 @@ struct ImageClipboardEditor: View {
             Text(annotationText.isEmpty ? "Text" : annotationText)
                 .font(.system(size: textSize, weight: .semibold))
                 .foregroundStyle(annotationColor)
-                .frame(width: selection.width, height: selection.height, alignment: .topLeading)
+                .multilineTextAlignment(textAlignment.textAlignment)
+                .frame(width: selection.width, height: selection.height, alignment: textAlignment.frameAlignment)
                 .offset(x: selection.minX, y: selection.minY)
         }
     }
@@ -308,7 +332,12 @@ struct ImageClipboardEditor: View {
                 Text(annotation.text.isEmpty ? "Text" : annotation.text)
                     .font(.system(size: max(10, annotation.textSize / displayScale), weight: .semibold))
                     .foregroundStyle(strokeColor)
-                    .frame(width: displayRect.width, height: displayRect.height, alignment: .topLeading)
+                    .multilineTextAlignment(annotation.textAlignment.textAlignment)
+                    .frame(
+                        width: displayRect.width,
+                        height: displayRect.height,
+                        alignment: annotation.textAlignment.frameAlignment
+                    )
                     .offset(x: displayRect.minX, y: displayRect.minY)
             case .crop, .redact:
                 EmptyView()
@@ -450,9 +479,17 @@ struct ImageClipboardEditor: View {
                     .disabled(!selectedTool.usesFill || !fillsShape)
 
                 Menu {
+                    Button("Copy") {
+                        copySelectedAnnotation()
+                    }
                     Button("Duplicate") {
                         duplicateSelectedAnnotation()
                     }
+                    Button("Paste") {
+                        pasteCopiedAnnotation()
+                    }
+                    .disabled(copiedAnnotation == nil)
+                    Divider()
                     Button("Bring Forward") {
                         moveSelectedAnnotationForward()
                     }
@@ -493,6 +530,76 @@ struct ImageClipboardEditor: View {
                         selectedTool = .text
                     }
             }
+
+            annotationInspector
+        }
+    }
+
+    @ViewBuilder
+    private var annotationInspector: some View {
+        if let selectedAnnotation {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Label("Object Inspector", systemImage: "slider.horizontal.3")
+                        .font(.headline)
+
+                    Spacer()
+
+                    Text(selectedAnnotation.tool.title)
+                        .foregroundStyle(.secondary)
+                }
+
+                HStack(spacing: 12) {
+                    percentStepper("X", value: bindingForSelectedRect(\.origin.x))
+                    percentStepper("Y", value: bindingForSelectedRect(\.origin.y))
+                    percentStepper("W", value: bindingForSelectedRect(\.size.width))
+                    percentStepper("H", value: bindingForSelectedRect(\.size.height))
+
+                    Divider().frame(height: 24)
+
+                    if selectedAnnotation.tool == .text {
+                        Picker("Alignment", selection: $textAlignment) {
+                            ForEach(ImageAnnotationTextAlignment.allCases) { alignment in
+                                Label(alignment.title, systemImage: alignment.systemImageName)
+                                    .tag(alignment)
+                            }
+                        }
+                        .labelsHidden()
+                        .frame(width: 98)
+
+                        Divider().frame(height: 24)
+                    }
+
+                    Button {
+                        moveSelectedAnnotationBackward()
+                    } label: {
+                        Label("Send Backward", systemImage: "square.3.layers.3d")
+                    }
+                    .labelStyle(.iconOnly)
+                    .help("Send Backward")
+
+                    Button {
+                        moveSelectedAnnotationForward()
+                    } label: {
+                        Label("Bring Forward", systemImage: "square.3.layers.3d")
+                    }
+                    .labelStyle(.iconOnly)
+                    .help("Bring Forward")
+                }
+            }
+            .padding(10)
+            .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 8))
+        }
+    }
+
+    private func percentStepper(
+        _ title: String,
+        value: Binding<Double>
+    ) -> some View {
+        Stepper(value: value, in: 0...100, step: 1) {
+            Text("\(title) \(Int(value.wrappedValue))%")
+                .font(.caption.monospacedDigit())
+                .frame(width: 58, alignment: .leading)
         }
     }
 
@@ -671,10 +778,12 @@ struct ImageClipboardEditor: View {
         if let selectedAnnotation = selectedAnnotation,
            annotationDragSnapshot == nil,
            let handle = selectedAnnotation.hitHandle(at: point, in: imageRect) {
+            recordUndo()
             annotationDragSnapshot = selectedAnnotation
             activeAnnotationHandle = handle
         } else if annotationDragSnapshot == nil,
                   let hitAnnotation = annotations.reversed().first(where: { $0.hitTest(point, in: imageRect) }) {
+            recordUndo()
             select(hitAnnotation)
             annotationDragSnapshot = hitAnnotation
             activeAnnotationHandle = nil
@@ -722,6 +831,7 @@ struct ImageClipboardEditor: View {
     }
 
     private func applyDestructive(_ operation: ClipboardImageEditing.Operation) {
+        recordUndo()
         let sourceData = rasterizedImageData() ?? workingImageData
         guard let editedData = ClipboardImageEditing.edit(
                 sourceData,
@@ -742,6 +852,7 @@ struct ImageClipboardEditor: View {
             return
         }
 
+        recordUndo()
         let annotation = ImageAnnotation(
             tool: selectedTool,
             normalizedSelection: normalizedSelection,
@@ -753,6 +864,7 @@ struct ImageClipboardEditor: View {
             lineWidth: max(1, CGFloat(lineWidth) * displayToPixelScale),
             text: annotationText,
             textSize: max(10, CGFloat(textSize) * displayToPixelScale),
+            textAlignment: textAlignment,
             displayScale: max(displayToPixelScale, 1)
         )
         annotations.append(annotation)
@@ -798,6 +910,7 @@ struct ImageClipboardEditor: View {
         }
         lineWidth = Double(max(1, annotation.lineWidth / annotation.displayScale))
         textSize = Double(max(10, annotation.textSize / annotation.displayScale))
+        textAlignment = annotation.textAlignment
         annotationText = annotation.text
     }
 
@@ -814,10 +927,12 @@ struct ImageClipboardEditor: View {
             return
         }
 
+        recordUndo()
         annotations[index].color = NSColor(annotationColor)
         annotations[index].fillColor = fillsShape ? NSColor(fillColor) : nil
         annotations[index].lineWidth = max(1, CGFloat(lineWidth) * annotations[index].displayScale)
         annotations[index].textSize = max(10, CGFloat(textSize) * annotations[index].displayScale)
+        annotations[index].textAlignment = textAlignment
         annotations[index].text = annotationText
     }
 
@@ -825,8 +940,24 @@ struct ImageClipboardEditor: View {
         guard let selectedAnnotationID else {
             return
         }
+        recordUndo()
         annotations.removeAll { $0.id == selectedAnnotationID }
         self.selectedAnnotationID = nil
+    }
+
+    private func copySelectedAnnotation() {
+        copiedAnnotation = selectedAnnotation
+    }
+
+    private func pasteCopiedAnnotation() {
+        guard let copiedAnnotation else {
+            return
+        }
+
+        recordUndo()
+        let pasted = copiedAnnotation.copyWithNewID().moved(by: CGSize(width: 0.025, height: 0.025))
+        annotations.append(pasted)
+        selectedAnnotationID = pasted.id
     }
 
     private func duplicateSelectedAnnotation() {
@@ -835,6 +966,7 @@ struct ImageClipboardEditor: View {
             return
         }
 
+        recordUndo()
         let duplicate = selectedAnnotation.copyWithNewID().moved(by: CGSize(width: 0.025, height: 0.025))
         annotations.insert(duplicate, at: min(index + 1, annotations.count))
         selectedAnnotationID = duplicate.id
@@ -847,6 +979,7 @@ struct ImageClipboardEditor: View {
             return
         }
 
+        recordUndo()
         annotations.swapAt(index, index + 1)
     }
 
@@ -857,7 +990,95 @@ struct ImageClipboardEditor: View {
             return
         }
 
+        recordUndo()
         annotations.swapAt(index, index - 1)
+    }
+
+    private func moveSelectedAnnotation(_ direction: MoveCommandDirection) {
+        let delta: CGSize
+        switch direction {
+        case .up:
+            delta = CGSize(width: 0, height: -0.01)
+        case .down:
+            delta = CGSize(width: 0, height: 0.01)
+        case .left:
+            delta = CGSize(width: -0.01, height: 0)
+        case .right:
+            delta = CGSize(width: 0.01, height: 0)
+        default:
+            return
+        }
+
+        moveSelectedAnnotation(by: delta)
+    }
+
+    private func moveSelectedAnnotation(by delta: CGSize) {
+        guard let selectedAnnotationID,
+              let index = annotations.firstIndex(where: { $0.id == selectedAnnotationID }) else {
+            return
+        }
+
+        recordUndo()
+        annotations[index] = annotations[index].moved(by: delta)
+    }
+
+    private func bindingForSelectedRect(
+        _ keyPath: WritableKeyPath<CGRect, CGFloat>
+    ) -> Binding<Double> {
+        Binding {
+            guard let selectedAnnotation else {
+                return 0
+            }
+            return Double(selectedAnnotation.normalizedSelection.standardized[keyPath: keyPath] * 100)
+        } set: { value in
+            guard let selectedAnnotationID,
+                  let index = annotations.firstIndex(where: { $0.id == selectedAnnotationID }) else {
+                return
+            }
+
+            recordUndo()
+            var rect = annotations[index].normalizedSelection.standardized
+            rect[keyPath: keyPath] = CGFloat(value / 100)
+            annotations[index] = annotations[index].withNormalizedRect(rect)
+        }
+    }
+
+    private func recordUndo() {
+        undoStack.append(currentSnapshot)
+        redoStack = []
+    }
+
+    private func undo() {
+        guard let snapshot = undoStack.popLast() else {
+            return
+        }
+
+        redoStack.append(currentSnapshot)
+        restore(snapshot)
+    }
+
+    private func redo() {
+        guard let snapshot = redoStack.popLast() else {
+            return
+        }
+
+        undoStack.append(currentSnapshot)
+        restore(snapshot)
+    }
+
+    private var currentSnapshot: ImageEditorSnapshot {
+        ImageEditorSnapshot(
+            workingImageData: workingImageData,
+            annotations: annotations,
+            selectedAnnotationID: selectedAnnotationID
+        )
+    }
+
+    private func restore(_ snapshot: ImageEditorSnapshot) {
+        workingImageData = snapshot.workingImageData
+        annotations = snapshot.annotations
+        selectedAnnotationID = snapshot.selectedAnnotationID
+        clearSelection()
     }
 
     private func clearSelection() {
@@ -927,6 +1148,77 @@ private extension CGPoint {
     }
 }
 
+private struct ImageEditorSnapshot {
+    var workingImageData: Data
+    var annotations: [ImageAnnotation]
+    var selectedAnnotationID: UUID?
+}
+
+enum ImageAnnotationTextAlignment: String, CaseIterable, Identifiable {
+    case left
+    case center
+    case right
+
+    var id: String {
+        rawValue
+    }
+
+    var title: String {
+        switch self {
+        case .left:
+            return "Left"
+        case .center:
+            return "Center"
+        case .right:
+            return "Right"
+        }
+    }
+
+    var systemImageName: String {
+        switch self {
+        case .left:
+            return "text.alignleft"
+        case .center:
+            return "text.aligncenter"
+        case .right:
+            return "text.alignright"
+        }
+    }
+
+    var textAlignment: TextAlignment {
+        switch self {
+        case .left:
+            return .leading
+        case .center:
+            return .center
+        case .right:
+            return .trailing
+        }
+    }
+
+    var frameAlignment: Alignment {
+        switch self {
+        case .left:
+            return .topLeading
+        case .center:
+            return .top
+        case .right:
+            return .topTrailing
+        }
+    }
+
+    var nsTextAlignment: NSTextAlignment {
+        switch self {
+        case .left:
+            return .left
+        case .center:
+            return .center
+        case .right:
+            return .right
+        }
+    }
+}
+
 private struct ImageAnnotation: Identifiable {
     var id = UUID()
     var tool: ClipboardImageEditing.Tool
@@ -939,6 +1231,7 @@ private struct ImageAnnotation: Identifiable {
     var lineWidth: CGFloat
     var text: String
     var textSize: CGFloat
+    var textAlignment: ImageAnnotationTextAlignment
     var displayScale: CGFloat
 
     var operation: ClipboardImageEditing.Operation {
@@ -958,7 +1251,7 @@ private struct ImageAnnotation: Identifiable {
         case .freehand:
             return .freehand(color: color.cgColor, lineWidth: lineWidth, points: points)
         case .text:
-            return .text(text, color: color.cgColor, fontSize: textSize)
+            return .text(text, color: color.cgColor, fontSize: textSize, alignment: textAlignment)
         case .crop:
             return .crop
         case .redact:
@@ -969,6 +1262,44 @@ private struct ImageAnnotation: Identifiable {
     func copyWithNewID() -> ImageAnnotation {
         var copy = self
         copy.id = UUID()
+        return copy
+    }
+
+    func withNormalizedRect(_ rect: CGRect) -> ImageAnnotation {
+        var copy = self
+        let clampedRect = rect.standardized
+            .intersection(CGRect(x: 0, y: 0, width: 1, height: 1))
+        let usableRect = CGRect(
+            x: clampedRect.minX,
+            y: clampedRect.minY,
+            width: max(0.01, clampedRect.width),
+            height: max(0.01, clampedRect.height)
+        )
+
+        copy.normalizedSelection = usableRect
+        let oldBounds = overallBounds
+        func transformed(_ point: CGPoint) -> CGPoint {
+            guard oldBounds.width > 0, oldBounds.height > 0 else {
+                return CGPoint(x: usableRect.midX, y: usableRect.midY)
+            }
+
+            return CGPoint(
+                x: usableRect.minX + ((point.x - oldBounds.minX) / oldBounds.width) * usableRect.width,
+                y: usableRect.minY + ((point.y - oldBounds.minY) / oldBounds.height) * usableRect.height
+            )
+        }
+
+        switch tool {
+        case .line, .arrow:
+            copy.start = transformed(start)
+            copy.end = transformed(end)
+        case .freehand:
+            copy.points = points.map(transformed)
+        case .crop, .redact, .rectangle, .roundedRectangle, .oval, .highlight, .text:
+            copy.start = CGPoint(x: usableRect.minX, y: usableRect.minY)
+            copy.end = CGPoint(x: usableRect.maxX, y: usableRect.maxY)
+        }
+
         return copy
     }
 
@@ -1345,7 +1676,7 @@ enum ClipboardImageEditing {
             case .freehand:
                 return .freehand(color: color.cgColor, lineWidth: scaledLineWidth, points: points)
             case .text:
-                return .text(text, color: color.cgColor, fontSize: scaledFontSize)
+                return .text(text, color: color.cgColor, fontSize: scaledFontSize, alignment: .left)
             }
         }
     }
@@ -1361,7 +1692,7 @@ enum ClipboardImageEditing {
         case arrow(color: CGColor, lineWidth: CGFloat, start: CGPoint, end: CGPoint)
         case highlight(color: CGColor)
         case freehand(color: CGColor, lineWidth: CGFloat, points: [CGPoint])
-        case text(String, color: CGColor, fontSize: CGFloat)
+        case text(String, color: CGColor, fontSize: CGFloat, alignment: ImageAnnotationTextAlignment)
         case rotateLeft
         case rotateRight
         case flipHorizontal
@@ -1470,7 +1801,7 @@ enum ClipboardImageEditing {
                 color: color,
                 lineWidth: lineWidth
             )
-        case .text(let text, let color, let fontSize):
+        case .text(let text, let color, let fontSize, let alignment):
             guard let selection = usableSelection(normalizedSelection) else {
                 return nil
             }
@@ -1479,7 +1810,8 @@ enum ClipboardImageEditing {
                 pixelRect: pixelRect(for: selection, in: image, origin: .bottomLeft),
                 text: text,
                 color: color,
-                fontSize: fontSize
+                fontSize: fontSize,
+                alignment: alignment
             )
         }
         return result.flatMap(encodedPNGData)
@@ -1695,11 +2027,13 @@ enum ClipboardImageEditing {
         pixelRect: CGRect,
         text: String,
         color: CGColor,
-        fontSize: CGFloat
+        fontSize: CGFloat,
+        alignment: ImageAnnotationTextAlignment
     ) -> CGImage? {
         editedImage(image) { context in
             let paragraphStyle = NSMutableParagraphStyle()
             paragraphStyle.lineBreakMode = .byWordWrapping
+            paragraphStyle.alignment = alignment.nsTextAlignment
             let attributes: [NSAttributedString.Key: Any] = [
                 .font: NSFont.systemFont(ofSize: max(10, fontSize), weight: .semibold),
                 .foregroundColor: NSColor(cgColor: color) ?? .red,

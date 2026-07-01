@@ -165,5 +165,6 @@ They also cover screen-capture imports, OCR imports, export encoding, image edit
 
 ## Project Documentation
 
+- [ClipSnapImprovementPlan.md](ClipSnapImprovementPlan.md)
 - [ClipboardManagerEnhancementPlan.md](ClipboardManagerEnhancementPlan.md)
 - [CloudKitSetup.md](CloudKitSetup.md)

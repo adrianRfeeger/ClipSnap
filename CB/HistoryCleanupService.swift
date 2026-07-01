@@ -23,7 +23,8 @@ struct HistoryCleanupService {
                     byteCount: item.byteCount,
                     isPinned: item.isPinned,
                     isFavorite: item.isFavorite,
-                    isSensitive: item.isSensitive
+                    isSensitive: item.isSensitive,
+                    sourceBundleIdentifier: item.sourceBundleIdentifier
                 )
             }
             let identifiers = ClipboardRetentionPolicy.identifiersToDelete(from: snapshots, settings: settings)

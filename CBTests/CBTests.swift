@@ -272,6 +272,78 @@ struct CBTests {
         #expect(!identifiers.contains(oldImageID))
     }
 
+    @Test func explicitAppRuleTakesPrecedenceOverLegacyExcludedApp() {
+        var settings = ClipboardSettings.defaults
+        settings.excludedBundleIdentifiers = ["com.example.app"]
+        settings.appRules = [
+            ClipboardAppRule(
+                bundleIdentifier: "com.example.app",
+                ignoresClipboard: false,
+                keepsLocalOnly: true,
+                automaticTags: "work"
+            )
+        ]
+
+        let rule = settings.appRule(for: "com.example.app")
+
+        #expect(rule?.ignoresClipboard == false)
+        #expect(rule?.keepsLocalOnly == true)
+        #expect(rule?.automaticTags == "work")
+    }
+
+    @Test func legacyExcludedAppBecomesIgnoreRule() {
+        var settings = ClipboardSettings.defaults
+        settings.excludedBundleIdentifiers = ["com.example.noisy"]
+        settings.appRules = []
+
+        let rule = settings.appRule(for: "COM.EXAMPLE.NOISY")
+
+        #expect(rule?.ignoresClipboard == true)
+        #expect(rule?.bundleIdentifier == "com.example.noisy")
+    }
+
+    @Test func appRuleRetentionOverridesPerTypeAndGlobalRetention() {
+        let now = Date()
+        let appExpiredID = UUID()
+        let appRetainedID = UUID()
+        var settings = ClipboardSettings.defaults
+        settings.retentionDays = 30
+        settings.textRetentionDays = 30
+        settings.sensitiveRetentionMinutes = 0
+        settings.appRules = [
+            ClipboardAppRule(bundleIdentifier: "com.example.short", retentionDays: 1),
+            ClipboardAppRule(bundleIdentifier: "com.example.never", retentionDays: 0)
+        ]
+
+        let identifiers = ClipboardRetentionPolicy.identifiersToDelete(
+            from: [
+                ClipboardRetentionItem(
+                    id: appExpiredID,
+                    type: ClipboardItemType.text,
+                    createdAt: now.addingTimeInterval(-2 * 86_400),
+                    byteCount: 10,
+                    isPinned: false,
+                    isFavorite: false,
+                    sourceBundleIdentifier: "com.example.short"
+                ),
+                ClipboardRetentionItem(
+                    id: appRetainedID,
+                    type: ClipboardItemType.text,
+                    createdAt: now.addingTimeInterval(-60 * 86_400),
+                    byteCount: 10,
+                    isPinned: false,
+                    isFavorite: false,
+                    sourceBundleIdentifier: "com.example.never"
+                )
+            ],
+            settings: settings,
+            now: now
+        )
+
+        #expect(identifiers.contains(appExpiredID))
+        #expect(!identifiers.contains(appRetainedID))
+    }
+
     @Test func storageSummaryGroupsLargestCategoriesFirst() {
         let summary = ClipboardStorageSummary.make(
             from: [
@@ -638,6 +710,7 @@ struct CBTests {
                 normalizedSelection: selection,
                 operation: .rectangle(
                     color: CGColor(red: 1, green: 0, blue: 0, alpha: 1),
+                    fillColor: nil,
                     lineWidth: 2
                 )
             )
@@ -660,6 +733,95 @@ struct CBTests {
         let entries = ZIPArchiveParser.entries(in: Data(bytes))
 
         #expect(entries == [ZIPArchiveEntry(name: "note.txt", uncompressedSize: 42)])
+    }
+
+    @Test func savedFiltersNormalizeAndDiscardInvalidEntries() {
+        let firstID = UUID()
+        let filters = [
+            ClipboardSavedFilter(id: firstID, name: "  Mail  ", query: " app:Mail ", isBuiltIn: true),
+            ClipboardSavedFilter(name: "Mail", query: "app:Other"),
+            ClipboardSavedFilter(name: " ", query: "type:image"),
+            ClipboardSavedFilter(name: "Images", query: "type:image")
+        ]
+
+        let parsed = ClipboardSettings.parseSavedFilters(
+            ClipboardSettings.formattedSavedFilters(filters)
+        )
+
+        #expect(parsed.map(\.name) == ["Mail", "Images"])
+        #expect(parsed.first?.id == firstID)
+        #expect(parsed.allSatisfy { !$0.isBuiltIn })
+    }
+
+    @MainActor
+    @Test func savedFilterQueriesMatchUnknownDataLargeAndUnsyncedItems() throws {
+        let persistence = PersistenceController(inMemory: true)
+        let context = persistence.container.viewContext
+
+        let unknownItem = ClipboardItem.make(
+            in: context,
+            type: ClipboardItemType.unknown,
+            rawData: Data(repeating: 0, count: 12 * 1_024 * 1_024),
+            utiType: "com.example.private",
+            sourceApp: "Example"
+        )
+        unknownItem.isLocalOnly = true
+
+        let imageItem = ClipboardItem.make(
+            in: context,
+            type: ClipboardItemType.image,
+            previewText: "Image",
+            rawData: Data(repeating: 0, count: 12),
+            utiType: "public.png",
+            sourceApp: "Screen Capture"
+        )
+
+        #expect(ClipboardSearchQuery("type:unknown,data").matches(unknownItem))
+        #expect(ClipboardSearchQuery("size:large").matches(unknownItem))
+        #expect(ClipboardSearchQuery("sync:unsynced").matches(unknownItem))
+        #expect(ClipboardSearchQuery("type:image app:Screen").matches(imageItem))
+        #expect(!ClipboardSearchQuery("size:large").matches(imageItem))
+    }
+
+    @MainActor
+    @Test func sourceAwareTitlesDescribeGenericImageAndVideoItems() throws {
+        let persistence = PersistenceController(inMemory: true)
+        let context = persistence.container.viewContext
+        let image = try #require(makeTestImage())
+        let imageData = try #require(
+            NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:])
+        )
+
+        let imageItem = ClipboardItem.make(
+            in: context,
+            type: ClipboardItemType.image,
+            previewText: "Image",
+            imageData: imageData,
+            rawData: imageData,
+            utiType: "public.png",
+            sourceApp: "Safari"
+        )
+        let videoItem = ClipboardItem.make(
+            in: context,
+            type: ClipboardItemType.video,
+            previewText: "Video",
+            rawData: Data([0x00, 0x01]),
+            utiType: "public.mpeg-4",
+            sourceApp: "QuickTime Player"
+        )
+
+        #expect(imageItem.displayTitle == "Image from Safari - 4x4")
+        #expect(videoItem.displayTitle == "Video from QuickTime Player")
+    }
+
+    @Test func defaultIgnoredInternalTypesIncludeKnownPrivateMetadata() {
+        let ignoredTypes = ClipboardSettings.defaults.ignoredPasteboardTypes
+
+        #expect(ClipboardSettings.defaults.ignoresInternalPasteboardTypes)
+        #expect(ignoredTypes.contains("org.chromium.internal.*"))
+        #expect(ignoredTypes.contains("org.chromium.source-url"))
+        #expect(ignoredTypes.contains("com.apple.IconComposer.layer"))
+        #expect(ignoredTypes.contains("com.apple.IconComposer.assets"))
     }
 
     private func makeTestImage() -> CGImage? {

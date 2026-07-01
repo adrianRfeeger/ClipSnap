@@ -70,6 +70,157 @@ enum ClipboardExportError: LocalizedError {
 }
 
 @MainActor
+enum ClipboardDiagnosticsService {
+    static func copySummary(
+        items: [ClipboardItem],
+        settings: ClipboardSettings,
+        cloudSyncMonitor: CloudSyncMonitor
+    ) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(
+            summary(
+                items: items,
+                settings: settings,
+                cloudSyncMonitor: cloudSyncMonitor
+            ),
+            forType: .string
+        )
+    }
+
+    static func exportSummary(
+        items: [ClipboardItem],
+        settings: ClipboardSettings,
+        cloudSyncMonitor: CloudSyncMonitor
+    ) throws {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "ClipSnap Diagnostics.md"
+        panel.allowedContentTypes = [UTType(filenameExtension: "md") ?? .plainText]
+        guard panel.runModal() == .OK, let url = panel.url else {
+            return
+        }
+
+        try summary(
+            items: items,
+            settings: settings,
+            cloudSyncMonitor: cloudSyncMonitor
+        )
+        .data(using: .utf8)?
+        .write(to: url, options: .atomic)
+    }
+
+    static func summary(
+        items: [ClipboardItem],
+        settings: ClipboardSettings,
+        cloudSyncMonitor: CloudSyncMonitor
+    ) -> String {
+        let storageSummary = ClipboardStorageSummary.make(
+            from: items.map {
+                ClipboardStorageItem(
+                    type: $0.type ?? ClipboardItemType.unknown,
+                    byteCount: $0.byteCount,
+                    isSensitive: $0.isSensitive
+                )
+            }
+        )
+        let unknownItems = items.filter {
+            $0.type == ClipboardItemType.unknown || $0.type == ClipboardItemType.data
+        }
+        let localOnlyCount = items.filter(\.isLocalOnly).count
+        let archivedCount = items.filter(\.isArchived).count
+        let favoriteCount = items.filter(\.isFavorite).count
+        let pinnedCount = items.filter(\.isPinned).count
+
+        return """
+        # ClipSnap Diagnostics
+
+        Generated: \(Date().ISO8601Format())
+        App Version: \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "Unknown")
+        Build: \(Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "Unknown")
+
+        ## History
+
+        Items: \(storageSummary.itemCount)
+        Archived: \(archivedCount)
+        Favorites: \(favoriteCount)
+        Pinned: \(pinnedCount)
+        Sensitive: \(storageSummary.sensitiveItemCount)
+        Local Only: \(localOnlyCount)
+        Stored Data: \(ByteCountFormatter.string(fromByteCount: storageSummary.byteCount, countStyle: .file))
+
+        ## Settings
+
+        Maximum Items: \(settings.maximumItemCount)
+        Menu Bar Items: \(settings.menuBarItemCount)
+        Retention Days: \(settings.retentionDays)
+        Maximum Storage: \(settings.maximumStorageMegabytes) MB
+        Keep Favorites: \(settings.keepFavorites)
+        Detect Sensitive Content: \(settings.detectSensitiveContent)
+        Protect Sensitive Previews: \(settings.protectsSensitivePreviews)
+        Ignore Internal Types: \(settings.ignoresInternalPasteboardTypes)
+        Ignored Type Count: \(settings.ignoredPasteboardTypes.count)
+        App Rule Count: \(settings.appRules.count)
+
+        ## Sync
+
+        State: \(cloudSyncMonitor.state.title)
+        Last Successful Sync: \(cloudSyncMonitor.lastSuccessfulSync?.ISO8601Format() ?? "Never")
+        Last Error: \(cloudSyncMonitor.lastErrorDescription ?? "None")
+
+        ## Content Types
+
+        \(contentTypeSummary(storageSummary))
+
+        ## Unknown/Data Representations
+
+        \(unknownDiagnostics(for: unknownItems))
+
+        ## Recent Cloud Events
+
+        \(cloudEventSummary(cloudSyncMonitor.recentEvents))
+
+        Content text and binary payloads are intentionally redacted.
+        """
+    }
+
+    private static func contentTypeSummary(_ storageSummary: ClipboardStorageSummary) -> String {
+        guard !storageSummary.categories.isEmpty else {
+            return "No stored items."
+        }
+
+        return storageSummary.categories.map { category in
+            "- \(category.type): \(category.itemCount) item(s), \(ByteCountFormatter.string(fromByteCount: category.byteCount, countStyle: .file))"
+        }
+        .joined(separator: "\n")
+    }
+
+    private static func unknownDiagnostics(for items: [ClipboardItem]) -> String {
+        guard !items.isEmpty else {
+            return "No unknown/data items."
+        }
+
+        return items.prefix(25).map { item in
+            let representations = item.sortedRepresentations.map { representation in
+                "\(representation.utiIdentifier ?? "unknown") (\(ByteCountFormatter.string(fromByteCount: representation.byteCount, countStyle: .file)))"
+            }
+            .joined(separator: ", ")
+            return "- \(item.createdAt?.ISO8601Format() ?? "Unknown date") \(item.sourceApp ?? "Unknown source") \(item.utiType ?? "unknown type"): \(representations)"
+        }
+        .joined(separator: "\n")
+    }
+
+    private static func cloudEventSummary(_ events: [CloudSyncEventSummary]) -> String {
+        guard !events.isEmpty else {
+            return "No recent cloud events."
+        }
+
+        return events.prefix(10).map { event in
+            "- \(event.type): \(event.succeeded ? "Succeeded" : "Failed") at \(event.endDate.ISO8601Format()) \(event.errorDescription ?? "")"
+        }
+        .joined(separator: "\n")
+    }
+}
+
+@MainActor
 enum ClipboardExportService {
     static func exportNative(_ item: ClipboardItem) throws {
         let payload = try nativePayload(for: item)
