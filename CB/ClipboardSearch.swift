@@ -11,6 +11,8 @@ struct ClipboardSearchQuery {
     let isArchived: Bool?
     let isLocalOnly: Bool?
     let isUnsynced: Bool?
+    let generatedMetadataStatus: ClipboardGeneratedMetadataStatus?
+    let hasGeneratedMetadata: Bool?
     let minimumByteCount: Int64?
     let afterDate: Date?
     let beforeDate: Date?
@@ -26,6 +28,8 @@ struct ClipboardSearchQuery {
         var isArchived: Bool?
         var isLocalOnly: Bool?
         var isUnsynced: Bool?
+        var generatedMetadataStatus: ClipboardGeneratedMetadataStatus?
+        var hasGeneratedMetadata: Bool?
         var minimumByteCount: Int64?
         var afterDate: Date?
         var beforeDate: Date?
@@ -68,6 +72,25 @@ struct ClipboardSearchQuery {
                 default:
                     terms.append(token)
                 }
+            case "suggestions", "ai":
+                switch value {
+                case "true", "yes", "1", "any":
+                    hasGeneratedMetadata = true
+                case "false", "no", "0", "none":
+                    hasGeneratedMetadata = false
+                case "pending":
+                    generatedMetadataStatus = .pending
+                case "suggested", "review", "needs-review":
+                    generatedMetadataStatus = .suggested
+                case "accepted", "applied":
+                    generatedMetadataStatus = .accepted
+                case "rejected":
+                    generatedMetadataStatus = .rejected
+                case "failed", "error":
+                    generatedMetadataStatus = .failed
+                default:
+                    terms.append(token)
+                }
             case "size":
                 if value == "large" {
                     minimumByteCount = 10 * 1_024 * 1_024
@@ -93,6 +116,8 @@ struct ClipboardSearchQuery {
         self.isArchived = isArchived
         self.isLocalOnly = isLocalOnly
         self.isUnsynced = isUnsynced
+        self.generatedMetadataStatus = generatedMetadataStatus
+        self.hasGeneratedMetadata = hasGeneratedMetadata
         self.minimumByteCount = minimumByteCount
         self.afterDate = afterDate
         self.beforeDate = beforeDate
@@ -137,6 +162,15 @@ struct ClipboardSearchQuery {
                 return false
             }
         }
+        let generatedMetadata = item.generatedMetadata
+        if let hasGeneratedMetadata,
+           (generatedMetadata?.hasSuggestions == true) != hasGeneratedMetadata {
+            return false
+        }
+        if let generatedMetadataStatus,
+           generatedMetadata?.status != generatedMetadataStatus {
+            return false
+        }
         if let minimumByteCount, item.byteCount < minimumByteCount {
             return false
         }
@@ -156,7 +190,14 @@ struct ClipboardSearchQuery {
             item.previewText,
             item.utiType,
             item.sourceApp,
-            item.displayType
+            item.displayType,
+            generatedMetadata?.suggestedTitle,
+            generatedMetadata?.suggestedCollection,
+            generatedMetadata?.summary,
+            generatedMetadata?.contentCategory,
+            generatedMetadata?.failureReason,
+            generatedMetadata?.suggestedTags.joined(separator: " "),
+            generatedMetadata?.detectedEntities.joined(separator: " ")
         ]
         .compactMap { $0 }
 
@@ -238,6 +279,8 @@ struct ClipboardSavedFilter: Codable, Hashable, Identifiable {
         ClipboardSavedFilter(name: "Screenshots", query: "type:image app:Screen Capture", isBuiltIn: true),
         ClipboardSavedFilter(name: "Favorites", query: "favorite:true", isBuiltIn: true),
         ClipboardSavedFilter(name: "Unsynced", query: "sync:unsynced", isBuiltIn: true),
+        ClipboardSavedFilter(name: "Needs Review", query: "suggestions:suggested", isBuiltIn: true),
+        ClipboardSavedFilter(name: "AI Generated", query: "suggestions:accepted", isBuiltIn: true),
         ClipboardSavedFilter(name: "Large Items", query: "size:large", isBuiltIn: true),
         ClipboardSavedFilter(name: "Unknown/Data", query: "type:unknown,data", isBuiltIn: true)
     ]

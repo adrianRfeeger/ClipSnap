@@ -110,6 +110,289 @@ struct CBTests {
         #expect(forward.byteCount == 11)
     }
 
+    @MainActor
+    @Test func syncPackageRoundTripsClipboardItemMetadataAndRepresentations() throws {
+        let persistence = PersistenceController(inMemory: true)
+        let context = persistence.container.viewContext
+        let item = ClipboardItem.make(
+            in: context,
+            type: ClipboardItemType.text,
+            plainText: "Package text",
+            previewText: "Package text",
+            rawData: Data("Package text".utf8),
+            utiType: "public.utf8-plain-text",
+            sourceApp: "Tests",
+            sourceBundleIdentifier: "com.example.tests"
+        )
+        item.customTitle = "Packaged Item"
+        item.notes = "Package notes"
+        item.tagsText = "sync, package"
+        item.collectionName = "Testing"
+        item.isFavorite = true
+        item.isPinned = true
+
+        let representation = ClipboardRepresentation(context: context)
+        representation.item = item
+        representation.itemIndex = 0
+        representation.order = 0
+        representation.utiIdentifier = "public.utf8-plain-text"
+        representation.data = Data("Representation data".utf8)
+        representation.stringValue = "Representation string"
+        representation.byteCount = Int64(
+            (representation.data?.count ?? 0)
+                + (representation.stringValue?.utf8.count ?? 0)
+        )
+        item.updateContentIdentity()
+
+        let package = ClipboardSyncPackage(item: item)
+        let decoded = try ClipboardSyncPackage.decode(from: package.encodedData())
+
+        #expect(decoded.schemaVersion == ClipboardSyncPackage.currentSchemaVersion)
+        #expect(decoded.item.id == item.id)
+        #expect(decoded.item.customTitle == "Packaged Item")
+        #expect(decoded.item.tagsText == "sync, package")
+        #expect(decoded.representations.count == 1)
+        #expect(decoded.representations.first?.stringValue == "Representation string")
+        #expect(decoded.contentHash == item.contentHash)
+    }
+
+    @MainActor
+    @Test func syncPackageCanRebuildClipboardItem() throws {
+        let sourcePersistence = PersistenceController(inMemory: true)
+        let sourceContext = sourcePersistence.container.viewContext
+        let sourceItem = ClipboardItem.make(
+            in: sourceContext,
+            type: ClipboardItemType.url,
+            plainText: "https://example.com/sync",
+            previewText: "https://example.com/sync",
+            rawData: Data("https://example.com/sync".utf8),
+            utiType: "public.url",
+            sourceApp: "Tests"
+        )
+        sourceItem.customTitle = "Sync URL"
+        sourceItem.isArchived = true
+        sourceItem.updateContentIdentity()
+
+        let targetPersistence = PersistenceController(inMemory: true)
+        let targetContext = targetPersistence.container.viewContext
+        let rebuiltItem = ClipboardSyncPackage(item: sourceItem).makeClipboardItem(in: targetContext)
+
+        #expect(rebuiltItem.id == sourceItem.id)
+        #expect(rebuiltItem.displayTitle == "Sync URL")
+        #expect(rebuiltItem.plainText == "https://example.com/sync")
+        #expect(rebuiltItem.utiType == "public.url")
+        #expect(rebuiltItem.isArchived)
+        #expect(rebuiltItem.contentHash == sourceItem.contentHash)
+    }
+
+    @MainActor
+    @Test func syncConflictResolverUpdatesMetadataWhenContentHashMatches() throws {
+        let persistence = PersistenceController(inMemory: true)
+        let context = persistence.container.viewContext
+        let existingItem = ClipboardItem.make(
+            in: context,
+            type: ClipboardItemType.text,
+            plainText: "Same payload",
+            previewText: "Same payload",
+            rawData: Data("Same payload".utf8),
+            utiType: "public.utf8-plain-text",
+            sourceApp: "Tests"
+        )
+        existingItem.customTitle = "Old Title"
+        existingItem.updatedAt = Date(timeIntervalSince1970: 1)
+        existingItem.updateContentIdentity()
+
+        let remoteItem = ClipboardItem.make(
+            in: context,
+            type: ClipboardItemType.text,
+            plainText: "Same payload",
+            previewText: "Same payload",
+            rawData: Data("Same payload".utf8),
+            utiType: "public.utf8-plain-text",
+            sourceApp: "Tests"
+        )
+        remoteItem.id = existingItem.id
+        remoteItem.customTitle = "New Title"
+        remoteItem.tagsText = "synced"
+        remoteItem.updatedAt = Date(timeIntervalSince1970: 2)
+        remoteItem.updateContentIdentity()
+
+        let merge = ClipboardSyncConflictResolver.merge(
+            package: ClipboardSyncPackage(item: remoteItem),
+            existingItem: existingItem,
+            in: context
+        )
+
+        #expect(merge.result == .updatedMetadata)
+        #expect(merge.item?.id == existingItem.id)
+        #expect(existingItem.customTitle == "New Title")
+        #expect(existingItem.tagsText == "synced")
+    }
+
+    @MainActor
+    @Test func syncConflictResolverPreservesBothCopiesWhenPayloadDiffers() throws {
+        let persistence = PersistenceController(inMemory: true)
+        let context = persistence.container.viewContext
+        let existingItem = ClipboardItem.make(
+            in: context,
+            type: ClipboardItemType.text,
+            plainText: "Local payload",
+            previewText: "Local payload",
+            rawData: Data("Local payload".utf8),
+            utiType: "public.utf8-plain-text",
+            sourceApp: "Tests"
+        )
+        existingItem.customTitle = "Shared Item"
+        existingItem.updateContentIdentity()
+
+        let remoteItem = ClipboardItem.make(
+            in: context,
+            type: ClipboardItemType.text,
+            plainText: "Remote payload",
+            previewText: "Remote payload",
+            rawData: Data("Remote payload".utf8),
+            utiType: "public.utf8-plain-text",
+            sourceApp: "Tests"
+        )
+        remoteItem.id = existingItem.id
+        remoteItem.customTitle = "Shared Item"
+        remoteItem.updateContentIdentity()
+
+        let merge = ClipboardSyncConflictResolver.merge(
+            package: ClipboardSyncPackage(item: remoteItem),
+            existingItem: existingItem,
+            in: context
+        )
+
+        #expect(merge.result == .preservedConflict)
+        #expect(merge.item?.id != existingItem.id)
+        #expect(merge.item?.relatedItemIdentifier == existingItem.id?.uuidString)
+        #expect(merge.item?.customTitle == "Shared Item (Conflict)")
+        #expect(existingItem.plainText == "Local payload")
+    }
+
+    @MainActor
+    @Test func localFolderSyncProviderUploadsDownloadsAndDeletesPackages() async throws {
+        let folderURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ClipSnapLocalFolderProvider-\(UUID().uuidString)", isDirectory: true)
+        defer {
+            try? FileManager.default.removeItem(at: folderURL)
+        }
+
+        let persistence = PersistenceController(inMemory: true)
+        let context = persistence.container.viewContext
+        let item = ClipboardItem.make(
+            in: context,
+            type: ClipboardItemType.text,
+            plainText: "Local folder sync",
+            previewText: "Local folder sync",
+            rawData: Data("Local folder sync".utf8),
+            utiType: "public.utf8-plain-text",
+            sourceApp: "Tests"
+        )
+        item.updateContentIdentity()
+
+        let package = ClipboardSyncPackage(item: item)
+        let provider = ClipboardLocalFolderSyncProvider(
+            folderURL: folderURL,
+            descriptor: ClipboardSyncProviderDescriptor(
+                id: "local-test",
+                kind: .localFolder,
+                displayName: "Local Test",
+                capabilities: .localFolder,
+                isEnabled: true
+            )
+        )
+
+        try await provider.upload(package)
+
+        let downloaded = try await provider.downloadPackages(since: nil)
+        #expect(downloaded.map(\.itemIdentifier) == [package.itemIdentifier])
+        #expect(downloaded.first?.contentHash == package.contentHash)
+
+        let futurePackages = try await provider.downloadPackages(since: Date().addingTimeInterval(60))
+        #expect(futurePackages.isEmpty)
+
+        try await provider.deletePackage(itemIdentifier: package.itemIdentifier, updatedAt: Date())
+        let afterDelete = try await provider.downloadPackages(since: nil)
+        #expect(afterDelete.isEmpty)
+        let deleteMarkers = try await provider.downloadDeleteMarkers(since: nil)
+        #expect(deleteMarkers.map(\.itemIdentifier) == [package.itemIdentifier])
+
+        let markerURL = folderURL
+            .appendingPathComponent("deleted", isDirectory: true)
+            .appendingPathComponent(package.itemIdentifier.uuidString)
+            .appendingPathExtension(ClipboardLocalFolderSyncProvider.deleteMarkerFileExtension)
+        #expect(FileManager.default.fileExists(atPath: markerURL.path))
+    }
+
+    @MainActor
+    @Test func syncDeleteMarkerDoesNotRemoveNewerLocalItem() throws {
+        let persistence = PersistenceController(inMemory: true)
+        let context = persistence.container.viewContext
+        let item = ClipboardItem.make(
+            in: context,
+            type: ClipboardItemType.text,
+            plainText: "Edited locally",
+            previewText: "Edited locally",
+            rawData: Data("Edited locally".utf8),
+            utiType: "public.utf8-plain-text",
+            sourceApp: "Tests"
+        )
+        let marker = ClipboardSyncDeleteMarker(
+            itemIdentifier: try #require(item.id),
+            updatedAt: Date(timeIntervalSince1970: 10)
+        )
+        item.updatedAt = Date(timeIntervalSince1970: 20)
+
+        #expect(
+            ClipboardSyncConflictResolver.resolveDeleteMarker(marker, existingItem: item)
+                == .keepNewerLocal
+        )
+    }
+
+    @MainActor
+    @Test func syncDeleteMarkerRemovesOlderLocalItem() throws {
+        let persistence = PersistenceController(inMemory: true)
+        let context = persistence.container.viewContext
+        let item = ClipboardItem.make(
+            in: context,
+            type: ClipboardItemType.text,
+            plainText: "Old local",
+            previewText: "Old local",
+            rawData: Data("Old local".utf8),
+            utiType: "public.utf8-plain-text",
+            sourceApp: "Tests"
+        )
+        let marker = ClipboardSyncDeleteMarker(
+            itemIdentifier: try #require(item.id),
+            updatedAt: Date(timeIntervalSince1970: 20)
+        )
+        item.updatedAt = Date(timeIntervalSince1970: 10)
+
+        #expect(
+            ClipboardSyncConflictResolver.resolveDeleteMarker(marker, existingItem: item)
+                == .deleteLocal
+        )
+    }
+
+    @Test func syncProviderRegistryTracksEnabledProviders() {
+        var registry = SyncProviderRegistry()
+        #expect(registry.enabledProviders.map(\.kind) == [.iCloud])
+
+        registry.upsert(
+            ClipboardSyncProviderDescriptor(
+                id: "local-folder",
+                kind: .localFolder,
+                displayName: "Local Folder",
+                capabilities: .localFolder,
+                isEnabled: true
+            )
+        )
+
+        #expect(registry.enabledProviders.map(\.kind) == [.iCloud, .localFolder])
+    }
+
     @Test func sensitiveContentDetectionCoversCommonSecrets() {
         #expect(ClipboardPrivacyPolicy.isSensitive("123456"))
         #expect(ClipboardPrivacyPolicy.isSensitive("4242 4242 4242 4242"))
@@ -531,6 +814,102 @@ struct CBTests {
         #expect(ClipboardSearchQuery("collection:reports after:2024-01-01 before:2026-01-01").matches(item))
         #expect(!ClipboardSearchQuery("tag:personal").matches(item))
         #expect(!ClipboardSearchQuery("archived:true").matches(item))
+    }
+
+    @Test func generatedMetadataNormalizesValues() {
+        let metadata = ClipboardGeneratedMetadata(
+            suggestedTitle: "  Document Screenshot  ",
+            suggestedTags: [" image ", "Image", "", " screenshot "],
+            suggestedCollection: "  Screenshots  ",
+            summary: "  Captured document window.  ",
+            contentCategory: "  Reference  ",
+            detectedEntities: [" ClipSnap ", "clipsnap", "  "],
+            confidence: 1.5,
+            modelVersion: "  apple-intelligence-foundationmodels  ",
+            status: .suggested,
+            failureReason: "   "
+        )
+
+        #expect(metadata.suggestedTitle == "Document Screenshot")
+        #expect(metadata.suggestedTags == ["image", "screenshot"])
+        #expect(metadata.suggestedCollection == "Screenshots")
+        #expect(metadata.summary == "Captured document window.")
+        #expect(metadata.contentCategory == "Reference")
+        #expect(metadata.detectedEntities == ["ClipSnap"])
+        #expect(metadata.confidence == 1)
+        #expect(metadata.modelVersionDisplayName == "Apple Intelligence")
+        #expect(metadata.failureReason == nil)
+    }
+
+    @MainActor
+    @Test func generatedMetadataAppliesWithoutOverwritingExistingFields() {
+        let persistence = PersistenceController(inMemory: true)
+        let context = persistence.container.viewContext
+        let item = ClipboardItem.make(
+            in: context,
+            type: ClipboardItemType.text,
+            plainText: "Existing note",
+            previewText: "Existing note",
+            utiType: "public.utf8-plain-text",
+            sourceApp: "Tests"
+        )
+        item.customTitle = "Existing Title"
+        item.collectionName = "Existing Collection"
+        item.tagsText = "reference"
+
+        let metadata = ClipboardGeneratedMetadata(
+            suggestedTitle: "Generated Title",
+            suggestedTags: ["reference", "ai"],
+            suggestedCollection: "Generated Collection",
+            status: .suggested
+        )
+
+        #expect(item.applyGeneratedMetadata(metadata))
+        #expect(item.customTitle == "Existing Title")
+        #expect(item.collectionName == "Existing Collection")
+        #expect(item.tags == ["reference", "ai"])
+
+        #expect(item.applyGeneratedMetadata(metadata, fillsEmptyFieldsOnly: false))
+        #expect(item.customTitle == "Generated Title")
+        #expect(item.collectionName == "Generated Collection")
+        #expect(item.tags == ["reference", "ai"])
+    }
+
+    @MainActor
+    @Test func generatedMetadataParticipatesInSearchAndSuggestionFilters() throws {
+        let persistence = PersistenceController(inMemory: true)
+        let context = persistence.container.viewContext
+        let item = ClipboardItem.make(
+            in: context,
+            type: ClipboardItemType.image,
+            previewText: "Image",
+            utiType: "public.png",
+            sourceApp: "ClipSnap"
+        )
+        let itemIdentifier = try #require(item.id)
+        let metadata = ClipboardGeneratedMetadata(
+            suggestedTitle: "Document Screenshot",
+            suggestedTags: ["document", "screenshot"],
+            suggestedCollection: "Screenshots",
+            summary: "A screenshot of a document.",
+            contentCategory: "Reference",
+            detectedEntities: ["ClipSnap"],
+            confidence: 0.8,
+            modelVersion: "apple-intelligence-foundationmodels",
+            status: .suggested
+        )
+
+        ClipboardGeneratedMetadataStore.save(metadata, for: itemIdentifier)
+        defer {
+            ClipboardGeneratedMetadataStore.remove(for: itemIdentifier)
+        }
+
+        #expect(ClipboardSearchQuery("document").matches(item))
+        #expect(ClipboardSearchQuery("collection:screenshots").matches(item))
+        #expect(ClipboardSearchQuery("suggestions:suggested").matches(item))
+        #expect(ClipboardSearchQuery("ai:any").matches(item))
+        #expect(!ClipboardSearchQuery("suggestions:accepted").matches(item))
+        #expect(!ClipboardSearchQuery("ai:none").matches(item))
     }
 
     @Test func structuredTextFormatterPrettyPrintsJSON() {

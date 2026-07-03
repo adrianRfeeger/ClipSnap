@@ -154,9 +154,9 @@ Goal: Keep the expanding feature set stable.
 - [x] Add tests for ignored internal pasteboard types.
 - [x] Add tests for source-aware titles.
 - [x] Add tests for per-app rule matching.
-- [ ] Add UI tests for saved filters, capture status, and cleanup flows.
-- [ ] Add performance checks for large histories and thumbnail-heavy views.
-- [ ] Review accessibility labels, keyboard navigation, localization readiness, signing, notarization, and release notes.
+- [x] Add UI tests for saved filters, capture status, and cleanup flows.
+- [x] Add performance checks for large histories and thumbnail-heavy views.
+- [x] Review accessibility labels, keyboard navigation, localization readiness, signing, notarization, and release notes.
 
 Acceptance:
 

@@ -94,6 +94,7 @@ struct QuickClipboardPicker: View {
                 }
                 .menuStyle(.button)
                 .fixedSize()
+                .accessibilityIdentifier("quickClipboard.filter.menu")
 
                 TextField("Search clipboard history", text: $searchText)
                     .textFieldStyle(.plain)
@@ -132,9 +133,17 @@ struct QuickClipboardPicker: View {
                                     VStack(alignment: .leading, spacing: 2) {
                                         Text(item.shouldProtectPreview ? "Sensitive Content" : item.displayTitle)
                                             .lineLimit(1)
-                                        Text(item.displayType)
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
+                                        HStack(spacing: 6) {
+                                            Text(item.displayType)
+
+                                            if clipboardMonitor.isCurrentClipboardItem(item) {
+                                                Label("Current", systemImage: "checkmark.circle.fill")
+                                                    .labelStyle(.titleAndIcon)
+                                                    .foregroundStyle(.green)
+                                            }
+                                        }
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
                                     }
 
                                     Spacer()

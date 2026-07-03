@@ -2,6 +2,9 @@ import AppKit
 import CoreData
 import SwiftUI
 import UniformTypeIdentifiers
+#if canImport(FoundationModels)
+import FoundationModels
+#endif
 
 struct SettingsView: View {
     @Environment(\.managedObjectContext) private var viewContext
@@ -76,6 +79,12 @@ struct SettingsView: View {
     @AppStorage(ClipboardSettingKey.lastCleanupDeletedCount)
     private var lastCleanupDeletedCount = 0
 
+    @AppStorage(ClipboardSettingKey.localFolderSyncEnabled)
+    private var localFolderSyncEnabled = false
+
+    @AppStorage(ClipboardSettingKey.localFolderSyncPath)
+    private var localFolderSyncPath = ""
+
     @State private var isConfirmingClear = false
     @State private var pendingHealthCleanupAction: ClipboardHealthCleanupAction?
     @State private var selectedExcludedBundleIdentifiers: Set<String> = []
@@ -83,6 +92,7 @@ struct SettingsView: View {
     @State private var diagnosticsErrorMessage: String?
     @State private var applicationRuleSearchText = ""
     @State private var isShowingSetup = false
+    @State private var syncStatusMessage: String?
 
     @AppStorage(ScreenCaptureSettingKey.showsCursor)
     private var screenCaptureShowsCursor = false
@@ -138,6 +148,42 @@ struct SettingsView: View {
     @AppStorage(ClipboardAutomationSettingKey.tagsCode)
     private var automationTagsCode = ClipboardAutomationSettings.defaults.tagsCode
 
+    @AppStorage(ClipboardSettingKey.appleIntelligenceSuggestionsEnabled)
+    private var appleIntelligenceSuggestionsEnabled =
+        ClipboardSettings.defaults.appleIntelligenceSuggestionsEnabled
+
+    @AppStorage(ClipboardSettingKey.appleIntelligenceSuggestsTitles)
+    private var appleIntelligenceSuggestsTitles =
+        ClipboardSettings.defaults.appleIntelligenceSuggestsTitles
+
+    @AppStorage(ClipboardSettingKey.appleIntelligenceSuggestsTags)
+    private var appleIntelligenceSuggestsTags =
+        ClipboardSettings.defaults.appleIntelligenceSuggestsTags
+
+    @AppStorage(ClipboardSettingKey.appleIntelligenceSuggestsCollections)
+    private var appleIntelligenceSuggestsCollections =
+        ClipboardSettings.defaults.appleIntelligenceSuggestsCollections
+
+    @AppStorage(ClipboardSettingKey.appleIntelligenceSummarizesContent)
+    private var appleIntelligenceSummarizesContent =
+        ClipboardSettings.defaults.appleIntelligenceSummarizesContent
+
+    @AppStorage(ClipboardSettingKey.appleIntelligenceDescribesImages)
+    private var appleIntelligenceDescribesImages =
+        ClipboardSettings.defaults.appleIntelligenceDescribesImages
+
+    @AppStorage(ClipboardSettingKey.appleIntelligenceAppliesSuggestionsAutomatically)
+    private var appleIntelligenceAppliesSuggestionsAutomatically =
+        ClipboardSettings.defaults.appleIntelligenceAppliesSuggestionsAutomatically
+
+    @AppStorage(ClipboardSettingKey.appleIntelligenceReviewsSensitiveItems)
+    private var appleIntelligenceReviewsSensitiveItems =
+        ClipboardSettings.defaults.appleIntelligenceReviewsSensitiveItems
+
+    @AppStorage(ClipboardSettingKey.appleIntelligenceSyncsAcceptedMetadata)
+    private var appleIntelligenceSyncsAcceptedMetadata =
+        ClipboardSettings.defaults.appleIntelligenceSyncsAcceptedMetadata
+
     var body: some View {
         TabView {
             Form {
@@ -156,6 +202,7 @@ struct SettingsView: View {
                 Button("Open Setup Checklist…") {
                     isShowingSetup = true
                 }
+                .accessibilityIdentifier("settings.setup.open")
 
                 Section("Diagnostics") {
                     Button("Copy Diagnostic Summary") {
@@ -165,6 +212,7 @@ struct SettingsView: View {
                             cloudSyncMonitor: cloudSyncMonitor
                         )
                     }
+                    .accessibilityIdentifier("settings.diagnostics.copy")
 
                     Button("Export Diagnostic Summary…") {
                         do {
@@ -177,6 +225,7 @@ struct SettingsView: View {
                             diagnosticsErrorMessage = error.localizedDescription
                         }
                     }
+                    .accessibilityIdentifier("settings.diagnostics.export")
 
                     Text("Diagnostics redact clipboard content and stay local unless you export them.")
                         .font(.caption)
@@ -325,15 +374,46 @@ struct SettingsView: View {
 
                             Spacer()
                         }
+
+                        Divider()
+
+                        Toggle(
+                            "Ignore internal app clipboard metadata",
+                            isOn: $ignoresInternalPasteboardTypes
+                        )
+
+                        DisclosureGroup("Advanced Metadata Types") {
+                            VStack(alignment: .leading, spacing: 8) {
+                                TextEditor(text: $ignoredPasteboardTypes)
+                                    .font(.system(.body, design: .monospaced))
+                                    .frame(minHeight: 96)
+                                    .disabled(!ignoresInternalPasteboardTypes)
+
+                                HStack {
+                                    Text("\(ignoredPasteboardTypeCount) ignored types")
+                                        .foregroundStyle(.secondary)
+
+                                    Spacer()
+
+                                    Button("Reset Defaults") {
+                                        ignoredPasteboardTypes = ClipboardSettings.formattedPasteboardTypes(
+                                            ClipboardSettings.defaults.ignoredPasteboardTypes
+                                        )
+                                    }
+                                }
+                            }
+                            .padding(.top, 6)
+                        }
+                        .disabled(!ignoresInternalPasteboardTypes)
                     }
 
-                    Text("Add an app to ignore, keep local, conceal, tag, or retain clipboard changes from that source.")
+                    Text("Add an app to control how ClipSnap handles clipboard changes from that source. The metadata filter removes private bookkeeping types, such as browser and design-tool internal pasteboard records.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
 
                 if let selectedApplicationRule {
-                    Section("Selected Application Rule") {
+                    Section("Rule for \(selectedApplicationName)") {
                         Toggle(
                             "Ignore clipboard changes",
                             isOn: appRuleBoolBinding(
@@ -355,6 +435,14 @@ struct SettingsView: View {
                             isOn: appRuleBoolBinding(
                                 for: selectedApplicationRule.bundleIdentifier,
                                 keyPath: \.concealsPreviews
+                            )
+                        )
+
+                        Toggle(
+                            "Skip Apple Intelligence suggestions",
+                            isOn: appRuleBoolBinding(
+                                for: selectedApplicationRule.bundleIdentifier,
+                                keyPath: \.skipsAppleIntelligence
                             )
                         )
 
@@ -381,36 +469,11 @@ struct SettingsView: View {
                             Text("90 days").tag(90)
                             Text("1 year").tag(365)
                         }
-                    }
-                }
 
-                Section("Internal Clipboard Metadata") {
-                    Toggle(
-                        "Ignore internal app clipboard metadata",
-                        isOn: $ignoresInternalPasteboardTypes
-                    )
-
-                    TextEditor(text: $ignoredPasteboardTypes)
-                        .font(.system(.body, design: .monospaced))
-                        .frame(minHeight: 96)
-                        .disabled(!ignoresInternalPasteboardTypes)
-
-                    HStack {
-                        Text("\(ignoredPasteboardTypeCount) ignored types")
+                        Text("App rules run before sync and storage decisions. Local-only and concealed items are not sent to external sync providers.")
+                            .font(.caption)
                             .foregroundStyle(.secondary)
-
-                        Spacer()
-
-                        Button("Reset Defaults") {
-                            ignoredPasteboardTypes = ClipboardSettings.formattedPasteboardTypes(
-                                ClipboardSettings.defaults.ignoredPasteboardTypes
-                            )
-                        }
                     }
-
-                    Text("Use one pasteboard type per line. Suffix a type with * to ignore a family of private types, such as org.chromium.internal.*.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
                 }
             }
             .formStyle(.grouped)
@@ -495,6 +558,8 @@ struct SettingsView: View {
                     Toggle("Tag code and structured data", isOn: $automationTagsCode)
                 }
 
+                appleIntelligenceSection
+
                 Text("Rules run locally before duplicate detection and sync.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -505,57 +570,8 @@ struct SettingsView: View {
             }
 
             Form {
-                LabeledContent("Status") {
-                    Label(
-                        cloudSyncMonitor.state.title,
-                        systemImage: cloudSyncMonitor.state.systemImageName
-                    )
-                }
-
-                if let lastSuccessfulSync = cloudSyncMonitor.lastSuccessfulSync {
-                    LabeledContent("Last Successful Sync") {
-                        Text(lastSuccessfulSync.formatted(date: .abbreviated, time: .standard))
-                    }
-                }
-
-                if let lastSuccessfulExport = cloudSyncMonitor.lastSuccessfulExport {
-                    LabeledContent("Last Upload") {
-                        Text(lastSuccessfulExport.formatted(date: .abbreviated, time: .standard))
-                    }
-                }
-
-                if let lastSuccessfulImport = cloudSyncMonitor.lastSuccessfulImport {
-                    LabeledContent("Last Download") {
-                        Text(lastSuccessfulImport.formatted(date: .abbreviated, time: .standard))
-                    }
-                }
-
-                if let lastErrorDescription = cloudSyncMonitor.lastErrorDescription {
-                    Section("Last Error") {
-                        Text(lastErrorDescription)
-                            .textSelection(.enabled)
-                    }
-                }
-
-                if cloudSyncMonitor.containerIdentifiers.isEmpty {
-                    Section("Setup") {
-                        Text("Add the iCloud capability with CloudKit to the CB target, select a private CloudKit container, and enable Remote notifications.")
-                            .foregroundStyle(.secondary)
-                    }
-                } else {
-                    Section("Containers") {
-                        ForEach(cloudSyncMonitor.containerIdentifiers, id: \.self) { identifier in
-                            Text(identifier)
-                                .textSelection(.enabled)
-                        }
-                    }
-
-                    Button("Refresh Account Status") {
-                        Task {
-                            await cloudSyncMonitor.refreshAccountStatus()
-                        }
-                    }
-                }
+                iCloudSyncSection
+                localFolderSyncSection
 
                 if !cloudSyncMonitor.recentEvents.isEmpty {
                     Section("Recent Activity") {
@@ -567,7 +583,7 @@ struct SettingsView: View {
             }
             .formStyle(.grouped)
             .tabItem {
-                Label("iCloud", systemImage: "icloud")
+                Label("Sync", systemImage: "arrow.triangle.2.circlepath")
             }
         }
         .frame(width: 520, height: 360)
@@ -738,6 +754,7 @@ struct SettingsView: View {
             }
             .disabled(cleanupTargets(for: .unknownData).isEmpty)
         }
+        .accessibilityIdentifier("settings.health.cleanup.menu")
     }
 
     @ViewBuilder
@@ -760,6 +777,172 @@ struct SettingsView: View {
         )
     }
 
+    private var iCloudSyncSection: some View {
+        Section {
+            LabeledContent("Status") {
+                Label(
+                    cloudSyncMonitor.state.title,
+                    systemImage: cloudSyncMonitor.state.systemImageName
+                )
+            }
+
+            if let lastSuccessfulSync = cloudSyncMonitor.lastSuccessfulSync {
+                LabeledContent("Last Successful Sync") {
+                    Text(lastSuccessfulSync.formatted(date: .abbreviated, time: .standard))
+                }
+            }
+
+            if let lastSuccessfulExport = cloudSyncMonitor.lastSuccessfulExport {
+                LabeledContent("Last Upload") {
+                    Text(lastSuccessfulExport.formatted(date: .abbreviated, time: .standard))
+                }
+            }
+
+            if let lastSuccessfulImport = cloudSyncMonitor.lastSuccessfulImport {
+                LabeledContent("Last Download") {
+                    Text(lastSuccessfulImport.formatted(date: .abbreviated, time: .standard))
+                }
+            }
+
+            if let lastErrorDescription = cloudSyncMonitor.lastErrorDescription {
+                LabeledContent("Last Error") {
+                    Text(lastErrorDescription)
+                        .lineLimit(2)
+                        .textSelection(.enabled)
+                }
+            }
+
+            if cloudSyncMonitor.containerIdentifiers.isEmpty {
+                Text("Add the iCloud capability with CloudKit to the app target, select a private CloudKit container, and enable Remote notifications.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                DisclosureGroup("CloudKit Containers") {
+                    ForEach(cloudSyncMonitor.containerIdentifiers, id: \.self) { identifier in
+                        Text(identifier)
+                            .textSelection(.enabled)
+                    }
+                }
+
+                Button("Refresh iCloud Status") {
+                    Task {
+                        await cloudSyncMonitor.refreshAccountStatus()
+                    }
+                }
+            }
+        } header: {
+            Label("iCloud Sync", systemImage: "icloud")
+        } footer: {
+            Text("Native iCloud sync uses the app’s CloudKit container and continues to work independently of other sync providers.")
+        }
+    }
+
+    private var localFolderSyncSection: some View {
+        Section {
+            Toggle("Enable local folder sync", isOn: $localFolderSyncEnabled)
+
+            LabeledContent("Folder") {
+                Text(localFolderSyncPath.isEmpty ? "Not selected" : localFolderSyncPath)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .textSelection(.enabled)
+            }
+
+            HStack {
+                Button("Choose Folder…") {
+                    chooseLocalSyncFolder()
+                }
+
+                Button("Export Now") {
+                    Task {
+                        await exportToLocalSyncFolder()
+                    }
+                }
+                .disabled(!canUseLocalFolderSync)
+
+                Button("Import Now") {
+                    Task {
+                        await importFromLocalSyncFolder()
+                    }
+                }
+                .disabled(!canUseLocalFolderSync)
+            }
+
+            if let syncStatusMessage {
+                Text(syncStatusMessage)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        } header: {
+            Label("Local Folder Sync", systemImage: "folder")
+        } footer: {
+            Text("Writes portable ClipSnap packages into a folder for Dropbox, Syncthing, OneDrive folder sync, NAS shares, or external drives. Sensitive and local-only items are skipped.")
+        }
+    }
+
+    private var appleIntelligenceSection: some View {
+        Section {
+            AppleIntelligenceAvailabilityRow()
+
+            Toggle(
+                "Enable suggestions",
+                isOn: $appleIntelligenceSuggestionsEnabled
+            )
+
+            Toggle(
+                "Suggest item titles",
+                isOn: $appleIntelligenceSuggestsTitles
+            )
+            .disabled(!appleIntelligenceSuggestionsEnabled)
+
+            Toggle(
+                "Suggest tags",
+                isOn: $appleIntelligenceSuggestsTags
+            )
+            .disabled(!appleIntelligenceSuggestionsEnabled)
+
+            Toggle(
+                "Suggest collections",
+                isOn: $appleIntelligenceSuggestsCollections
+            )
+            .disabled(!appleIntelligenceSuggestionsEnabled)
+
+            Toggle(
+                "Summarize long text and HTML",
+                isOn: $appleIntelligenceSummarizesContent
+            )
+            .disabled(!appleIntelligenceSuggestionsEnabled)
+
+            Toggle(
+                "Describe images and screenshots",
+                isOn: $appleIntelligenceDescribesImages
+            )
+            .disabled(!appleIntelligenceSuggestionsEnabled)
+
+            Toggle(
+                "Apply suggestions automatically",
+                isOn: $appleIntelligenceAppliesSuggestionsAutomatically
+            )
+            .disabled(!appleIntelligenceSuggestionsEnabled)
+
+            Toggle(
+                "Review sensitive items before applying",
+                isOn: $appleIntelligenceReviewsSensitiveItems
+            )
+            .disabled(!appleIntelligenceSuggestionsEnabled || !appleIntelligenceAppliesSuggestionsAutomatically)
+
+            Toggle(
+                "Sync accepted generated metadata",
+                isOn: $appleIntelligenceSyncsAcceptedMetadata
+            )
+            .disabled(!appleIntelligenceSuggestionsEnabled)
+        } header: {
+            Label("Apple Intelligence", systemImage: "sparkles")
+        } footer: {
+            Text("Suggestions are planned as on-device metadata. Existing privacy rules, excluded apps, and local-only items will be checked before any item is processed.")
+        }
+    }
+
     private var lastCleanupDescription: String? {
         guard lastCleanupDate > 0 else {
             return nil
@@ -770,6 +953,146 @@ struct SettingsView: View {
             ? "1 item removed"
             : "\(lastCleanupDeletedCount) items removed"
         return "\(date.formatted(date: .abbreviated, time: .shortened)) - \(suffix)"
+    }
+
+    private var canUseLocalFolderSync: Bool {
+        localFolderSyncEnabled && !localFolderSyncPath.isEmpty
+    }
+
+    private var localFolderSyncProvider: ClipboardLocalFolderSyncProvider? {
+        guard canUseLocalFolderSync else {
+            return nil
+        }
+
+        return ClipboardLocalFolderSyncProvider(
+            folderURL: URL(fileURLWithPath: localFolderSyncPath, isDirectory: true),
+            descriptor: ClipboardSyncProviderDescriptor(
+                id: ClipboardSyncProviderKind.localFolder.rawValue,
+                kind: .localFolder,
+                displayName: "Local Folder",
+                capabilities: .localFolder,
+                isEnabled: true
+            )
+        )
+    }
+
+    private func chooseLocalSyncFolder() {
+        let panel = NSOpenPanel()
+        panel.title = "Choose ClipSnap Sync Folder"
+        panel.prompt = "Choose"
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+
+        guard panel.runModal() == .OK,
+              let url = panel.url else {
+            return
+        }
+
+        localFolderSyncPath = url.path
+        localFolderSyncEnabled = true
+        syncStatusMessage = "Local folder sync will use \(url.lastPathComponent)."
+    }
+
+    private func exportToLocalSyncFolder() async {
+        guard let provider = localFolderSyncProvider else {
+            syncStatusMessage = "Choose a local sync folder first."
+            return
+        }
+
+        let exportableItems = clipboardItems.filter {
+            !$0.isLocalOnly && !$0.isSensitive
+        }
+
+        do {
+            for item in exportableItems {
+                try await provider.upload(ClipboardSyncPackage(item: item))
+            }
+            syncStatusMessage = exportableItems.count == 1
+                ? "Exported 1 item to local folder."
+                : "Exported \(exportableItems.count) items to local folder."
+        } catch {
+            syncStatusMessage = "Local folder export failed: \(error.localizedDescription)"
+        }
+    }
+
+    private func importFromLocalSyncFolder() async {
+        guard let provider = localFolderSyncProvider else {
+            syncStatusMessage = "Choose a local sync folder first."
+            return
+        }
+
+        do {
+            let deleteMarkers = try await provider.downloadDeleteMarkers(since: nil)
+            let packages = try await provider.downloadPackages(since: nil)
+            var existingItems = Dictionary(
+                uniqueKeysWithValues: clipboardItems.compactMap { item in
+                    item.id.map { ($0, item) }
+                }
+            )
+            var changedItems: [ClipboardItem] = []
+            var insertedCount = 0
+            var updatedCount = 0
+            var conflictCount = 0
+            var deletedCount = 0
+            var keptNewerLocalCount = 0
+
+            for marker in deleteMarkers {
+                let resolution = ClipboardSyncConflictResolver.resolveDeleteMarker(
+                    marker,
+                    existingItem: existingItems[marker.itemIdentifier]
+                )
+                switch resolution {
+                case .deleteLocal:
+                    if let item = existingItems[marker.itemIdentifier] {
+                        ClipboardSpotlightIndexer.shared.deleteIdentifiers(
+                            item.id.map { [$0.uuidString] } ?? []
+                        )
+                        viewContext.delete(item)
+                        existingItems.removeValue(forKey: marker.itemIdentifier)
+                        deletedCount += 1
+                    }
+                case .keepNewerLocal:
+                    keptNewerLocalCount += 1
+                case .missingLocal:
+                    break
+                }
+            }
+
+            for package in packages {
+                guard existingItems[package.itemIdentifier]?.isDeleted != true else {
+                    continue
+                }
+                let merge = ClipboardSyncConflictResolver.merge(
+                    package: package,
+                    existingItem: existingItems[package.itemIdentifier],
+                    in: viewContext
+                )
+                if let item = merge.item,
+                   merge.result != .unchanged {
+                    changedItems.append(item)
+                }
+
+                switch merge.result {
+                case .inserted:
+                    insertedCount += 1
+                case .updatedMetadata:
+                    updatedCount += 1
+                case .preservedConflict:
+                    conflictCount += 1
+                case .unchanged:
+                    break
+                }
+            }
+
+            try viewContext.save()
+            changedItems.forEach(ClipboardSpotlightIndexer.shared.indexItem)
+            syncStatusMessage = "Imported \(insertedCount), updated \(updatedCount), deleted \(deletedCount), preserved \(conflictCount) conflict\(conflictCount == 1 ? "" : "s"), kept \(keptNewerLocalCount) newer local."
+        } catch {
+            viewContext.rollback()
+            syncStatusMessage = "Local folder import failed: \(error.localizedDescription)"
+        }
     }
 
     private var excludedApplications: [ExcludedApplication] {
@@ -797,6 +1120,7 @@ struct SettingsView: View {
                 || (rule.ignoresClipboard && "ignore".localizedCaseInsensitiveContains(query))
                 || (rule.keepsLocalOnly && "local".localizedCaseInsensitiveContains(query))
                 || (rule.concealsPreviews && "conceal".localizedCaseInsensitiveContains(query))
+                || (rule.skipsAppleIntelligence && "apple intelligence".localizedCaseInsensitiveContains(query))
         }
     }
 
@@ -811,6 +1135,15 @@ struct SettingsView: View {
         }
 
         return appRule(for: bundleIdentifier)
+    }
+
+    private var selectedApplicationName: String {
+        guard selectedExcludedBundleIdentifiers.count == 1,
+              let bundleIdentifier = selectedExcludedBundleIdentifiers.first else {
+            return "Application"
+        }
+
+        return ExcludedApplication(bundleIdentifier: bundleIdentifier).displayName
     }
 
     private var ignoredPasteboardTypeCount: Int {
@@ -1154,6 +1487,7 @@ struct ClipSnapSetupView: View {
         }
         .padding(22)
         .frame(width: 620)
+        .accessibilityIdentifier("setup.main")
         .task {
             await cloudSyncMonitor.refreshAccountStatus()
         }
@@ -1418,6 +1752,56 @@ private struct StorageCategoryRow: View {
     }
 }
 
+private struct AppleIntelligenceAvailabilityRow: View {
+    var body: some View {
+        LabeledContent("Status") {
+            availabilityLabel
+        }
+    }
+
+    @ViewBuilder
+    private var availabilityLabel: some View {
+        #if canImport(FoundationModels)
+        if #available(macOS 26.0, *) {
+            FoundationModelsAvailabilityLabel()
+        } else {
+            Label("Requires macOS 26", systemImage: "exclamationmark.triangle.fill")
+                .foregroundStyle(.secondary)
+        }
+        #else
+        Label("Foundation Models Unavailable", systemImage: "exclamationmark.triangle.fill")
+            .foregroundStyle(.secondary)
+        #endif
+    }
+}
+
+#if canImport(FoundationModels)
+@available(macOS 26.0, *)
+private struct FoundationModelsAvailabilityLabel: View {
+    private let model = SystemLanguageModel.default
+
+    var body: some View {
+        switch model.availability {
+        case .available:
+            Label("Available", systemImage: "checkmark.circle.fill")
+                .foregroundStyle(.green)
+        case .unavailable(.deviceNotEligible):
+            Label("Device Not Eligible", systemImage: "exclamationmark.triangle.fill")
+                .foregroundStyle(.secondary)
+        case .unavailable(.appleIntelligenceNotEnabled):
+            Label("Apple Intelligence Disabled", systemImage: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+        case .unavailable(.modelNotReady):
+            Label("Model Not Ready", systemImage: "clock")
+                .foregroundStyle(.secondary)
+        case .unavailable:
+            Label("Unavailable", systemImage: "exclamationmark.triangle.fill")
+                .foregroundStyle(.secondary)
+        }
+    }
+}
+#endif
+
 private struct ExcludedApplication: Identifiable {
     let bundleIdentifier: String
 
@@ -1485,6 +1869,9 @@ private struct ExcludedApplicationRow: View {
         }
         if rule.concealsPreviews {
             actions.append("Conceal")
+        }
+        if rule.skipsAppleIntelligence {
+            actions.append("No AI")
         }
         if !rule.automaticTags.isEmpty {
             actions.append("Tags")

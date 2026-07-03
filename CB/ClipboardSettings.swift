@@ -5,6 +5,7 @@ struct ClipboardAppRule: Codable, Hashable, Identifiable {
     var ignoresClipboard: Bool
     var keepsLocalOnly: Bool
     var concealsPreviews: Bool
+    var skipsAppleIntelligence: Bool
     var automaticTags: String
     var retentionDays: Int
 
@@ -13,6 +14,7 @@ struct ClipboardAppRule: Codable, Hashable, Identifiable {
         ignoresClipboard: Bool = false,
         keepsLocalOnly: Bool = false,
         concealsPreviews: Bool = false,
+        skipsAppleIntelligence: Bool = false,
         automaticTags: String = "",
         retentionDays: Int = -1
     ) {
@@ -20,8 +22,30 @@ struct ClipboardAppRule: Codable, Hashable, Identifiable {
         self.ignoresClipboard = ignoresClipboard
         self.keepsLocalOnly = keepsLocalOnly
         self.concealsPreviews = concealsPreviews
+        self.skipsAppleIntelligence = skipsAppleIntelligence
         self.automaticTags = automaticTags
         self.retentionDays = retentionDays
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case bundleIdentifier
+        case ignoresClipboard
+        case keepsLocalOnly
+        case concealsPreviews
+        case skipsAppleIntelligence
+        case automaticTags
+        case retentionDays
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        bundleIdentifier = try container.decode(String.self, forKey: .bundleIdentifier)
+        ignoresClipboard = try container.decodeIfPresent(Bool.self, forKey: .ignoresClipboard) ?? false
+        keepsLocalOnly = try container.decodeIfPresent(Bool.self, forKey: .keepsLocalOnly) ?? false
+        concealsPreviews = try container.decodeIfPresent(Bool.self, forKey: .concealsPreviews) ?? false
+        skipsAppleIntelligence = try container.decodeIfPresent(Bool.self, forKey: .skipsAppleIntelligence) ?? false
+        automaticTags = try container.decodeIfPresent(String.self, forKey: .automaticTags) ?? ""
+        retentionDays = try container.decodeIfPresent(Int.self, forKey: .retentionDays) ?? -1
     }
 
     var id: String {
@@ -36,6 +60,7 @@ struct ClipboardAppRule: Codable, Hashable, Identifiable {
             ignoresClipboard: ignoresClipboard,
             keepsLocalOnly: keepsLocalOnly,
             concealsPreviews: concealsPreviews,
+            skipsAppleIntelligence: skipsAppleIntelligence,
             automaticTags: automaticTags
                 .components(separatedBy: CharacterSet(charactersIn: ",\n"))
                 .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -49,6 +74,7 @@ struct ClipboardAppRule: Codable, Hashable, Identifiable {
         ignoresClipboard
             || keepsLocalOnly
             || concealsPreviews
+            || skipsAppleIntelligence
             || !automaticTags.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             || retentionDays >= 0
     }
@@ -77,6 +103,18 @@ enum ClipboardSettingKey {
     static let lastCleanupDate = "lastCleanupDate"
     static let lastCleanupDeletedCount = "lastCleanupDeletedCount"
     static let hasCompletedSetup = "hasCompletedSetup"
+    static let localFolderSyncEnabled = "localFolderSyncEnabled"
+    static let localFolderSyncPath = "localFolderSyncPath"
+    static let appleIntelligenceSuggestionsEnabled = "appleIntelligenceSuggestionsEnabled"
+    static let appleIntelligenceSuggestsTitles = "appleIntelligenceSuggestsTitles"
+    static let appleIntelligenceSuggestsTags = "appleIntelligenceSuggestsTags"
+    static let appleIntelligenceSuggestsCollections = "appleIntelligenceSuggestsCollections"
+    static let appleIntelligenceSummarizesContent = "appleIntelligenceSummarizesContent"
+    static let appleIntelligenceDescribesImages = "appleIntelligenceDescribesImages"
+    static let appleIntelligenceAppliesSuggestionsAutomatically = "appleIntelligenceAppliesSuggestionsAutomatically"
+    static let appleIntelligenceReviewsSensitiveItems = "appleIntelligenceReviewsSensitiveItems"
+    static let appleIntelligenceSyncsAcceptedMetadata = "appleIntelligenceSyncsAcceptedMetadata"
+    static let generatedClipboardMetadata = "generatedClipboardMetadata"
 }
 
 struct ClipboardSettings {
@@ -98,6 +136,15 @@ struct ClipboardSettings {
     var fileRetentionDays: Int
     var mediaRetentionDays: Int
     var otherRetentionDays: Int
+    var appleIntelligenceSuggestionsEnabled: Bool
+    var appleIntelligenceSuggestsTitles: Bool
+    var appleIntelligenceSuggestsTags: Bool
+    var appleIntelligenceSuggestsCollections: Bool
+    var appleIntelligenceSummarizesContent: Bool
+    var appleIntelligenceDescribesImages: Bool
+    var appleIntelligenceAppliesSuggestionsAutomatically: Bool
+    var appleIntelligenceReviewsSensitiveItems: Bool
+    var appleIntelligenceSyncsAcceptedMetadata: Bool
 
     static let defaults = ClipboardSettings(
         maximumItemCount: 500,
@@ -122,7 +169,16 @@ struct ClipboardSettings {
         imageRetentionDays: -1,
         fileRetentionDays: -1,
         mediaRetentionDays: -1,
-        otherRetentionDays: -1
+        otherRetentionDays: -1,
+        appleIntelligenceSuggestionsEnabled: false,
+        appleIntelligenceSuggestsTitles: true,
+        appleIntelligenceSuggestsTags: true,
+        appleIntelligenceSuggestsCollections: false,
+        appleIntelligenceSummarizesContent: true,
+        appleIntelligenceDescribesImages: true,
+        appleIntelligenceAppliesSuggestionsAutomatically: false,
+        appleIntelligenceReviewsSensitiveItems: true,
+        appleIntelligenceSyncsAcceptedMetadata: true
     )
 
     static func load(from defaults: UserDefaults = .standard) -> ClipboardSettings {
@@ -191,7 +247,34 @@ struct ClipboardSettings {
             otherRetentionDays: retentionOverride(
                 forKey: ClipboardSettingKey.otherRetentionDays,
                 defaults: defaults
-            )
+            ),
+            appleIntelligenceSuggestionsEnabled: defaults.object(
+                forKey: ClipboardSettingKey.appleIntelligenceSuggestionsEnabled
+            ) as? Bool ?? fallback.appleIntelligenceSuggestionsEnabled,
+            appleIntelligenceSuggestsTitles: defaults.object(
+                forKey: ClipboardSettingKey.appleIntelligenceSuggestsTitles
+            ) as? Bool ?? fallback.appleIntelligenceSuggestsTitles,
+            appleIntelligenceSuggestsTags: defaults.object(
+                forKey: ClipboardSettingKey.appleIntelligenceSuggestsTags
+            ) as? Bool ?? fallback.appleIntelligenceSuggestsTags,
+            appleIntelligenceSuggestsCollections: defaults.object(
+                forKey: ClipboardSettingKey.appleIntelligenceSuggestsCollections
+            ) as? Bool ?? fallback.appleIntelligenceSuggestsCollections,
+            appleIntelligenceSummarizesContent: defaults.object(
+                forKey: ClipboardSettingKey.appleIntelligenceSummarizesContent
+            ) as? Bool ?? fallback.appleIntelligenceSummarizesContent,
+            appleIntelligenceDescribesImages: defaults.object(
+                forKey: ClipboardSettingKey.appleIntelligenceDescribesImages
+            ) as? Bool ?? fallback.appleIntelligenceDescribesImages,
+            appleIntelligenceAppliesSuggestionsAutomatically: defaults.object(
+                forKey: ClipboardSettingKey.appleIntelligenceAppliesSuggestionsAutomatically
+            ) as? Bool ?? fallback.appleIntelligenceAppliesSuggestionsAutomatically,
+            appleIntelligenceReviewsSensitiveItems: defaults.object(
+                forKey: ClipboardSettingKey.appleIntelligenceReviewsSensitiveItems
+            ) as? Bool ?? fallback.appleIntelligenceReviewsSensitiveItems,
+            appleIntelligenceSyncsAcceptedMetadata: defaults.object(
+                forKey: ClipboardSettingKey.appleIntelligenceSyncsAcceptedMetadata
+            ) as? Bool ?? fallback.appleIntelligenceSyncsAcceptedMetadata
         )
     }
 

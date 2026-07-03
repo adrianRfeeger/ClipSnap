@@ -74,12 +74,20 @@ struct ClipboardItemPreview: View {
 
     @ViewBuilder
     private var imagePreview: some View {
-        if let image = item.image {
+        if let image = previewImage {
             VStack(spacing: 12) {
-                Image(nsImage: image)
-                    .resizable()
-                    .scaledToFit()
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                GeometryReader { proxy in
+                    Image(nsImage: image)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(
+                            width: proxy.size.width,
+                            height: proxy.size.height,
+                            alignment: .center
+                        )
+                }
+                .frame(minHeight: 240)
+                .background(.quaternary.opacity(0.15), in: RoundedRectangle(cornerRadius: 6))
 
                 HStack {
                     Button("Edit Image") {
@@ -95,6 +103,31 @@ struct ClipboardItemPreview: View {
         } else {
             ContentUnavailableView("Image Unavailable", systemImage: "photo")
         }
+    }
+
+    private var previewImage: NSImage? {
+        if let image = item.image {
+            return image
+        }
+
+        if let thumbnailData = item.thumbnailData,
+           let image = NSImage(data: thumbnailData) {
+            return image
+        }
+
+        if let rawData = item.rawData,
+           let image = NSImage(data: rawData) {
+            return image
+        }
+
+        for representation in item.sortedRepresentations {
+            if let data = representation.data,
+               let image = NSImage(data: data) {
+                return image
+            }
+        }
+
+        return nil
     }
 
     @ViewBuilder

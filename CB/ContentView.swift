@@ -1,5 +1,7 @@
 import AppKit
+import AVFoundation
 import CoreData
+import PDFKit
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -29,6 +31,7 @@ struct ContentView: View {
     @State private var pendingSavedFilterQuery = ""
     @State private var imageEditingItem: ClipboardItem?
     @State private var exportErrorMessage: String?
+    @State private var generatedMetadataRefreshID = UUID()
     @AppStorage(ClipboardSettingKey.hasCompletedSetup)
     private var hasCompletedSetup = false
     @AppStorage(ClipboardSettingKey.savedFilters)
@@ -41,6 +44,7 @@ struct ContentView: View {
     private var excludedBundleIdentifiers = ""
 
     private var filteredItems: [ClipboardItem] {
+        _ = generatedMetadataRefreshID
         let query = ClipboardSearchQuery(searchText)
         return items.filter { item in
             selectedFilter.matches(item)
@@ -61,6 +65,30 @@ struct ContentView: View {
         items.filter { selectedItemIdentifiers.contains($0.selectionIdentifier) }
     }
 
+    private var canGenerateSuggestionsForSelection: Bool {
+        let settings = ClipboardSettings.load()
+        return settings.appleIntelligenceSuggestionsEnabled
+            && selectedItems.contains { item in
+                !item.skipsAppleIntelligenceSuggestions
+                    && !item.isSensitive
+                    && item.type != ClipboardItemType.unknown
+                    && item.type != ClipboardItemType.data
+            }
+    }
+
+    private var selectedItemsContainGeneratedMetadata: Bool {
+        selectedItems.contains { $0.generatedMetadata?.hasSuggestions == true }
+    }
+
+    private var selectedItemsContainApplicableSuggestions: Bool {
+        selectedItems.contains { item in
+            guard let metadata = item.generatedMetadata else {
+                return false
+            }
+            return metadata.hasSuggestions && metadata.status != .accepted
+        }
+    }
+
     private var savedFilters: [ClipboardSavedFilter] {
         ClipboardSettings.parseSavedFilters(savedFiltersData)
     }
@@ -71,7 +99,8 @@ struct ContentView: View {
                 ForEach(filteredItems) { item in
                     ClipboardRow(
                         item: item,
-                        highlightedTerms: ClipboardSearchQuery(searchText).terms
+                        highlightedTerms: ClipboardSearchQuery(searchText).terms,
+                        isCurrentClipboardItem: clipboardMonitor.isCurrentClipboardItem(item)
                     )
                         .contentShape(Rectangle())
                         .tag(item.selectionIdentifier)
@@ -238,6 +267,30 @@ struct ContentView: View {
                                 }
                             }
 
+                            Divider()
+
+                            Menu("Suggestions") {
+                                Button("Generate for Selected") {
+                                    generateSuggestionsForSelectedItems()
+                                }
+                                .disabled(!canGenerateSuggestionsForSelection)
+
+                                Button("Apply Suggested Metadata") {
+                                    applySuggestionsToSelectedItems()
+                                }
+                                .disabled(!selectedItemsContainApplicableSuggestions)
+
+                                Button("Reject Suggestions") {
+                                    rejectSuggestionsForSelectedItems()
+                                }
+                                .disabled(!selectedItemsContainGeneratedMetadata)
+
+                                Button("Clear Suggestions") {
+                                    clearSuggestionsForSelectedItems()
+                                }
+                                .disabled(!selectedItemsContainGeneratedMetadata)
+                            }
+
                             Menu("Export") {
                                 if let item = selectedItem {
                                     Button("Native Format…") {
@@ -346,12 +399,14 @@ struct ContentView: View {
                     } label: {
                         Label("Saved Filters", systemImage: "line.3.horizontal.decrease.circle")
                     }
+                    .accessibilityIdentifier("clipboard.savedFilters.menu")
                 }
             }
         } detail: {
             if let selectedItem {
                 ClipboardDetailView(
                     item: selectedItem,
+                    isCurrentClipboardItem: clipboardMonitor.isCurrentClipboardItem(selectedItem),
                     copyAction: {
                         clipboardMonitor.copyToClipboard(selectedItem)
                     },
@@ -632,6 +687,76 @@ struct ContentView: View {
         saveContext()
     }
 
+    private func generateSuggestionsForSelectedItems() {
+        let targets = selectedItems.filter {
+            !$0.skipsAppleIntelligenceSuggestions
+                && !$0.isSensitive
+                && $0.type != ClipboardItemType.unknown
+                && $0.type != ClipboardItemType.data
+        }
+        guard !targets.isEmpty else {
+            return
+        }
+
+        Task {
+            let service = ClipboardMetadataSuggestionService()
+            for item in targets {
+                guard let itemIdentifier = item.id else {
+                    continue
+                }
+                let metadata = await service.suggestions(for: item)
+                ClipboardGeneratedMetadataStore.save(metadata, for: itemIdentifier)
+            }
+            await MainActor.run {
+                generatedMetadataRefreshID = UUID()
+            }
+        }
+    }
+
+    private func applySuggestionsToSelectedItems() {
+        var changedItems: [ClipboardItem] = []
+        for item in selectedItems {
+            guard let itemIdentifier = item.id,
+                  var metadata = item.generatedMetadata,
+                  metadata.hasSuggestions else {
+                continue
+            }
+
+            if item.applyGeneratedMetadata(metadata) {
+                changedItems.append(item)
+            }
+            metadata.status = .accepted
+            ClipboardGeneratedMetadataStore.save(metadata, for: itemIdentifier)
+        }
+
+        if !changedItems.isEmpty {
+            saveContext()
+        }
+        generatedMetadataRefreshID = UUID()
+    }
+
+    private func rejectSuggestionsForSelectedItems() {
+        for item in selectedItems {
+            guard let itemIdentifier = item.id,
+                  var metadata = item.generatedMetadata else {
+                continue
+            }
+            metadata.status = .rejected
+            ClipboardGeneratedMetadataStore.save(metadata, for: itemIdentifier)
+        }
+        generatedMetadataRefreshID = UUID()
+    }
+
+    private func clearSuggestionsForSelectedItems() {
+        for item in selectedItems {
+            guard let itemIdentifier = item.id else {
+                continue
+            }
+            ClipboardGeneratedMetadataStore.remove(for: itemIdentifier)
+        }
+        generatedMetadataRefreshID = UUID()
+    }
+
     private func saveEditedText(_ text: String, on item: ClipboardItem) {
         item.plainText = text
         item.previewText = text.clipboardPreview
@@ -779,13 +904,11 @@ private extension ClipboardItem {
 private struct ClipboardRow: View {
     let item: ClipboardItem
     let highlightedTerms: [String]
+    let isCurrentClipboardItem: Bool
 
     var body: some View {
         HStack(spacing: 10) {
-            Image(systemName: iconName)
-                .font(.system(size: 16, weight: .medium))
-                .foregroundStyle(.secondary)
-                .frame(width: 22)
+            ClipboardRowThumbnail(item: item)
 
             VStack(alignment: .leading, spacing: 3) {
                 Text(
@@ -813,6 +936,12 @@ private struct ClipboardRow: View {
                         Image(systemName: "eye.slash.fill")
                     }
 
+                    if isCurrentClipboardItem {
+                        Label("Current", systemImage: "checkmark.circle.fill")
+                            .labelStyle(.titleAndIcon)
+                            .foregroundStyle(.green)
+                    }
+
                     if let collectionName = item.normalizedCollectionName {
                         Text(collectionName)
                             .lineLimit(1)
@@ -832,13 +961,120 @@ private struct ClipboardRow: View {
         )
     }
 
-    private var iconName: String {
-        item.systemImageName
+}
+
+private struct ClipboardRowThumbnail: View {
+    @ObservedObject var item: ClipboardItem
+    @State private var generatedVideoThumbnail: NSImage?
+
+    var body: some View {
+        Group {
+            if item.shouldProtectPreview {
+                symbol("eye.slash.fill")
+            } else if let image = thumbnailImage {
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: 34, height: 34)
+                    .clipShape(RoundedRectangle(cornerRadius: 5))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 5)
+                            .stroke(.separator.opacity(0.5), lineWidth: 0.5)
+                    }
+            } else {
+                symbol(item.systemImageName)
+            }
+        }
+        .frame(width: 38, height: 38)
+        .task(id: item.objectID) {
+            generatedVideoThumbnail = nil
+            guard item.type == ClipboardItemType.video,
+                  let data = item.rawData ?? item.sortedRepresentations.compactMap(\.data).first else {
+                return
+            }
+
+            generatedVideoThumbnail = await makeVideoThumbnail(
+                from: data,
+                utiIdentifier: item.utiType
+            )
+        }
+    }
+
+    private var thumbnailImage: NSImage? {
+        switch item.type {
+        case ClipboardItemType.image:
+            if let thumbnailData = item.thumbnailData,
+               let image = NSImage(data: thumbnailData) {
+                return image
+            }
+            return item.image
+        case ClipboardItemType.pdf:
+            return pdfThumbnail
+        case ClipboardItemType.file:
+            return fileIcon
+        case ClipboardItemType.video:
+            return generatedVideoThumbnail
+        default:
+            return nil
+        }
+    }
+
+    private var pdfThumbnail: NSImage? {
+        guard let rawData = item.rawData,
+              let document = PDFDocument(data: rawData),
+              let page = document.page(at: 0) else {
+            return nil
+        }
+
+        return page.thumbnail(of: NSSize(width: 68, height: 68), for: .cropBox)
+    }
+
+    private var fileIcon: NSImage? {
+        guard let plainText = item.plainText,
+              let url = URL(string: plainText),
+              url.isFileURL else {
+            return nil
+        }
+
+        return NSWorkspace.shared.icon(forFile: url.path)
+    }
+
+    private func makeVideoThumbnail(from data: Data, utiIdentifier: String?) async -> NSImage? {
+        let fileExtension = utiIdentifier.flatMap { UTType($0)?.preferredFilenameExtension } ?? "mov"
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ClipSnap History Preview \(UUID().uuidString)")
+            .appendingPathExtension(fileExtension)
+        defer {
+            try? FileManager.default.removeItem(at: url)
+        }
+
+        do {
+            try data.write(to: url, options: .atomic)
+            let asset = AVURLAsset(url: url)
+            let generator = AVAssetImageGenerator(asset: asset)
+            generator.appliesPreferredTrackTransform = true
+            generator.maximumSize = CGSize(width: 120, height: 120)
+            let image = try await generator.image(
+                at: CMTime(seconds: 0.1, preferredTimescale: 600)
+            ).image
+            return NSImage(cgImage: image, size: NSSize(width: image.width, height: image.height))
+        } catch {
+            return nil
+        }
+    }
+
+    private func symbol(_ name: String) -> some View {
+        Image(systemName: name)
+            .font(.system(size: 17, weight: .medium))
+            .foregroundStyle(.secondary)
+            .frame(width: 34, height: 34)
+            .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 5))
     }
 }
 
 private struct ClipboardDetailView: View {
     @ObservedObject var item: ClipboardItem
+    let isCurrentClipboardItem: Bool
     let copyAction: () -> Void
     let pinAction: () -> Void
     let favoriteAction: () -> Void
@@ -856,41 +1092,47 @@ private struct ClipboardDetailView: View {
     @AppStorage("showsClipboardItemMetadata")
     private var showsItemMetadata = true
     @State private var revealsSensitiveContent = false
+    @State private var generatedMetadata: ClipboardGeneratedMetadata?
+    @State private var isGeneratingMetadata = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            if showsItemMetadata {
-                header
-                Divider()
-            }
-
-            if item.shouldProtectPreview && !revealsSensitiveContent {
-                ContentUnavailableView {
-                    Label("Sensitive Content", systemImage: "eye.slash.fill")
-                } description: {
-                    Text("This preview is concealed to reduce accidental exposure.")
-                } actions: {
-                    Button("Reveal") {
-                        revealsSensitiveContent = true
-                    }
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                if showsItemMetadata {
+                    header
+                    Divider()
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                ClipboardItemPreview(
-                    item: item,
-                    saveTextAction: saveTextAction,
-                    recognizeTextAction: recognizeTextAction,
-                    editImageAction: editImageAction
-                )
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            }
 
-            if showsItemMetadata {
-                Divider()
-                metadata
+                if item.shouldProtectPreview && !revealsSensitiveContent {
+                    ContentUnavailableView {
+                        Label("Sensitive Content", systemImage: "eye.slash.fill")
+                    } description: {
+                        Text("This preview is concealed to reduce accidental exposure.")
+                    } actions: {
+                        Button("Reveal") {
+                            revealsSensitiveContent = true
+                        }
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 240)
+                } else {
+                    ClipboardItemPreview(
+                        item: item,
+                        saveTextAction: saveTextAction,
+                        recognizeTextAction: recognizeTextAction,
+                        editImageAction: editImageAction
+                    )
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
+                }
+
+                if showsItemMetadata {
+                    Divider()
+                    generatedMetadataPanel
+                    metadata
+                }
             }
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .padding(24)
         }
-        .padding(24)
         .onDrag {
             ClipboardDragDropSupport.itemProvider(for: item)
         } preview: {
@@ -903,6 +1145,10 @@ private struct ClipboardDetailView: View {
         .accessibilityIdentifier("clipboard.detail")
         .onChange(of: item.selectionIdentifier) {
             revealsSensitiveContent = false
+            loadGeneratedMetadata()
+        }
+        .onAppear {
+            loadGeneratedMetadata()
         }
         .toolbar {
             ToolbarItemGroup {
@@ -949,16 +1195,19 @@ private struct ClipboardDetailView: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: 10) {
             TextField(
-                "Custom title",
-                text: Binding(
-                    get: { item.customTitle ?? "" },
-                    set: { item.customTitle = $0.isEmpty ? nil : $0 }
-                )
+                "Title",
+                text: titleBinding
             )
                 .font(.title2)
                 .fontWeight(.semibold)
                 .textFieldStyle(.plain)
                 .onSubmit(saveMetadataAction)
+
+            if isCurrentClipboardItem {
+                Label("Current Clipboard", systemImage: "checkmark.circle.fill")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.green)
+            }
 
             TextField(
                 "Tags, separated by commas",
@@ -995,6 +1244,140 @@ private struct ClipboardDetailView: View {
             if let createdAt = item.createdAt {
                 Text(createdAt.formatted(date: .abbreviated, time: .standard))
                     .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var titleBinding: Binding<String> {
+        Binding {
+            item.customTitle?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+                ? item.customTitle ?? ""
+                : item.displayTitle
+        } set: { value in
+            let title = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            item.customTitle = title.isEmpty ? nil : title
+            item.updatedAt = Date()
+        }
+    }
+
+    @ViewBuilder
+    private var generatedMetadataPanel: some View {
+        let settings = ClipboardSettings.load()
+        if settings.appleIntelligenceSuggestionsEnabled || generatedMetadata != nil {
+            let canGenerateSuggestions = settings.appleIntelligenceSuggestionsEnabled
+                && !item.skipsAppleIntelligenceSuggestions
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Label("Suggestions", systemImage: "sparkles")
+                        .font(.subheadline.weight(.semibold))
+
+                    Spacer()
+
+                    Button {
+                        generateMetadataSuggestions()
+                    } label: {
+                        Label(
+                            generatedMetadata == nil ? "Generate" : "Regenerate",
+                            systemImage: "arrow.triangle.2.circlepath"
+                        )
+                    }
+                    .controlSize(.small)
+                    .disabled(!canGenerateSuggestions || isGeneratingMetadata)
+                }
+
+                if !settings.appleIntelligenceSuggestionsEnabled {
+                    Text("Enable Apple Intelligence suggestions in Settings > Automation.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else if item.skipsAppleIntelligenceSuggestions {
+                    Text("Apple Intelligence suggestions are disabled for this source application.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else if isGeneratingMetadata {
+                    ProgressView()
+                        .controlSize(.small)
+                } else if let generatedMetadata {
+                    generatedMetadataSuggestions(metadata: generatedMetadata)
+                } else {
+                    Text("Generate local suggestions for this item. Apple Intelligence model output will use this same review workflow when enabled.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(.vertical, 4)
+        }
+    }
+
+    private func generatedMetadataSuggestions(metadata: ClipboardGeneratedMetadata) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if let suggestedTitle = metadata.suggestedTitle {
+                suggestionRow("Title", suggestedTitle)
+            }
+
+            if !metadata.suggestedTags.isEmpty {
+                tagSuggestionRow(metadata.suggestedTags)
+            }
+
+            if let suggestedCollection = metadata.suggestedCollection {
+                suggestionRow("Collection", suggestedCollection)
+            }
+
+            if let summary = metadata.summary {
+                suggestionRow("Summary", summary)
+            }
+
+            if let failureReason = metadata.failureReason {
+                suggestionRow("Status", failureReason)
+            }
+
+            HStack {
+                Button("Apply") {
+                    applyGeneratedMetadata()
+                }
+                .controlSize(.small)
+                .disabled(!metadata.hasSuggestions)
+
+                Button("Reject") {
+                    rejectGeneratedMetadata()
+                }
+                .controlSize(.small)
+                .disabled(metadata.status == .rejected)
+
+                Button("Clear") {
+                    clearGeneratedMetadata()
+                }
+                .controlSize(.small)
+
+                Spacer()
+
+                Text(metadata.modelVersionDisplayName)
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        .font(.caption)
+    }
+
+    private func suggestionRow(_ title: String, _ value: String) -> some View {
+        LabeledContent(title) {
+            Text(value)
+                .lineLimit(3)
+                .textSelection(.enabled)
+        }
+    }
+
+    private func tagSuggestionRow(_ tags: [String]) -> some View {
+        LabeledContent("Tags") {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 5) {
+                    ForEach(tags.prefix(10), id: \.self) { tag in
+                        Text(tag)
+                            .font(.caption2)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(.quaternary, in: Capsule())
+                    }
+                }
             }
         }
     }
@@ -1159,6 +1542,9 @@ private struct ClipboardDetailView: View {
         if rule.concealsPreviews {
             descriptions.append("Conceal previews")
         }
+        if rule.skipsAppleIntelligence {
+            descriptions.append("Skip Apple Intelligence")
+        }
         if !rule.automaticTags.isEmpty {
             descriptions.append("Tags: \(rule.automaticTags)")
         }
@@ -1174,6 +1560,65 @@ private struct ClipboardDetailView: View {
         let source = item.sourceApp ?? "the source app"
         let representationCount = item.sortedRepresentations.count
         return "ClipSnap did not find a standard previewable representation, so it retained \(format) from \(source). \(representationCount) stored representation\(representationCount == 1 ? "" : "s") can still be restored when copied back."
+    }
+
+    private func loadGeneratedMetadata() {
+        guard let itemIdentifier = item.id else {
+            generatedMetadata = nil
+            return
+        }
+
+        generatedMetadata = ClipboardGeneratedMetadataStore.metadata(for: itemIdentifier)
+    }
+
+    private func generateMetadataSuggestions() {
+        guard let itemIdentifier = item.id else {
+            return
+        }
+
+        isGeneratingMetadata = true
+        Task {
+            let metadata = await ClipboardMetadataSuggestionService().suggestions(for: item)
+            ClipboardGeneratedMetadataStore.save(metadata, for: itemIdentifier)
+            await MainActor.run {
+                generatedMetadata = metadata
+                isGeneratingMetadata = false
+            }
+        }
+    }
+
+    private func applyGeneratedMetadata() {
+        guard let itemIdentifier = item.id,
+              var metadata = generatedMetadata else {
+            return
+        }
+
+        item.applyGeneratedMetadata(metadata)
+
+        metadata.status = .accepted
+        ClipboardGeneratedMetadataStore.save(metadata, for: itemIdentifier)
+        generatedMetadata = metadata
+        saveMetadataAction()
+    }
+
+    private func rejectGeneratedMetadata() {
+        guard let itemIdentifier = item.id,
+              var metadata = generatedMetadata else {
+            return
+        }
+
+        metadata.status = .rejected
+        ClipboardGeneratedMetadataStore.save(metadata, for: itemIdentifier)
+        generatedMetadata = metadata
+    }
+
+    private func clearGeneratedMetadata() {
+        guard let itemIdentifier = item.id else {
+            return
+        }
+
+        ClipboardGeneratedMetadataStore.remove(for: itemIdentifier)
+        generatedMetadata = nil
     }
 }
 

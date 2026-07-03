@@ -3,6 +3,7 @@ import Foundation
 
 enum AppLaunchConfiguration {
     static let uiTestingArgument = "--ui-testing"
+    static let largeHistoryUITestingArgument = "--ui-testing-large-history"
 
     static var isUITesting: Bool {
         ProcessInfo.processInfo.arguments.contains(uiTestingArgument)
@@ -44,6 +45,48 @@ enum AppLaunchConfiguration {
         url.customTitle = "UI Test URL"
         url.isFavorite = true
 
+        if ProcessInfo.processInfo.arguments.contains(largeHistoryUITestingArgument) {
+            seedLargeHistory(in: context)
+        }
+
         try? context.save()
+    }
+
+    @MainActor
+    private static func seedLargeHistory(in context: NSManagedObjectContext) {
+        let pngData = Data(
+            base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/luzGZQAAAABJRU5ErkJggg=="
+        )
+
+        for index in 0..<180 {
+            let text = "Large history note \(index)"
+            let item = ClipboardItem.make(
+                in: context,
+                type: ClipboardItemType.text,
+                plainText: text,
+                previewText: text,
+                rawData: Data(text.utf8),
+                utiType: "public.utf8-plain-text",
+                sourceApp: "UI Tests"
+            )
+            item.tagsText = index.isMultiple(of: 3) ? "large-history, note" : "large-history"
+        }
+
+        if let pngData {
+            for index in 0..<40 {
+                let item = ClipboardItem.make(
+                    in: context,
+                    type: ClipboardItemType.image,
+                    previewText: "Image",
+                    imageData: pngData,
+                    thumbnailData: pngData,
+                    rawData: pngData,
+                    utiType: "public.png",
+                    sourceApp: "UI Tests"
+                )
+                item.customTitle = "Large History Image \(index)"
+                item.tagsText = "large-history, image"
+            }
+        }
     }
 }

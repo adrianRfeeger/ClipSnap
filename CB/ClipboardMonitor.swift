@@ -8,6 +8,7 @@ import UniformTypeIdentifiers
 final class ClipboardMonitor: ObservableObject {
     @Published private(set) var isMonitoring = false
     @Published private(set) var pausedUntil: Date?
+    @Published private(set) var currentClipboardItemIdentifier: UUID?
 
     private let context: NSManagedObjectContext
     private let cleanupService = HistoryCleanupService()
@@ -32,7 +33,9 @@ final class ClipboardMonitor: ObservableObject {
             return
         }
 
-        lastChangeCount = NSPasteboard.general.changeCount
+        let pasteboard = NSPasteboard.general
+        lastChangeCount = pasteboard.changeCount
+        refreshCurrentClipboardMarker(from: pasteboard)
         pausedUntil = nil
         resumeTask?.cancel()
         resumeTask = nil
@@ -78,6 +81,7 @@ final class ClipboardMonitor: ObservableObject {
         pasteboard.clearContents()
         defer {
             lastChangeCount = pasteboard.changeCount
+            markCurrentClipboardItem(item)
             isRestoring = false
         }
 
@@ -174,6 +178,7 @@ final class ClipboardMonitor: ObservableObject {
                 }
                 try context.save()
                 ClipboardSpotlightIndexer.shared.indexItem(duplicate)
+                scheduleMetadataEnrichment(for: duplicate, settings: settings)
                 if copyToPasteboard {
                     copyToClipboard(duplicate)
                 }
@@ -182,6 +187,7 @@ final class ClipboardMonitor: ObservableObject {
 
             try context.save()
             ClipboardSpotlightIndexer.shared.indexItem(item)
+            scheduleMetadataEnrichment(for: item, settings: settings)
             cleanupService.clean(context: context, settings: settings)
             if copyToPasteboard {
                 copyToClipboard(item)
@@ -231,11 +237,13 @@ final class ClipboardMonitor: ObservableObject {
                 }
                 try context.save()
                 ClipboardSpotlightIndexer.shared.indexItem(duplicate)
+                scheduleMetadataEnrichment(for: duplicate, settings: settings)
                 return duplicate.id?.uuidString
             }
 
             try context.save()
             ClipboardSpotlightIndexer.shared.indexItem(item)
+            scheduleMetadataEnrichment(for: item, settings: settings)
             cleanupService.clean(context: context, settings: settings)
             logger.info("Stored screen recording, bytes \(data.count, privacy: .public)")
             return item.id?.uuidString
@@ -315,6 +323,7 @@ final class ClipboardMonitor: ObservableObject {
                 }
                 try context.save()
                 ClipboardSpotlightIndexer.shared.indexItem(duplicate)
+                scheduleMetadataEnrichment(for: duplicate, settings: settings)
                 if copyToPasteboard {
                     copyToClipboard(duplicate)
                 }
@@ -324,6 +333,7 @@ final class ClipboardMonitor: ObservableObject {
             updateRecognizedText(trimmedText, onSourceItemWith: sourceItemIdentifier)
             try context.save()
             ClipboardSpotlightIndexer.shared.indexItem(item)
+            scheduleMetadataEnrichment(for: item, settings: settings)
             cleanupService.clean(context: context, settings: settings)
             if copyToPasteboard {
                 copyToClipboard(item)
@@ -401,6 +411,8 @@ final class ClipboardMonitor: ObservableObject {
             return
         }
 
+        currentClipboardItemIdentifier = nil
+
         processPasteboard(
             pasteboard,
             sourceApp: sourceApplication?.localizedName,
@@ -457,7 +469,9 @@ final class ClipboardMonitor: ObservableObject {
                 }
             }
             try context.save()
+            markCurrentClipboardItem(itemToIndex)
             ClipboardSpotlightIndexer.shared.indexItem(itemToIndex)
+            scheduleMetadataEnrichment(for: itemToIndex, settings: settings)
             cleanupService.clean(context: context, settings: settings)
             logger.info(
                 "Processed clipboard item type \(capturedType, privacy: .public), bytes \(capturedByteCount, privacy: .public)"
@@ -466,6 +480,34 @@ final class ClipboardMonitor: ObservableObject {
             context.rollback()
             logger.error("Failed to save clipboard item: \(error.localizedDescription, privacy: .public)")
         }
+    }
+
+    func isCurrentClipboardItem(_ item: ClipboardItem) -> Bool {
+        guard let itemID = item.id else {
+            return false
+        }
+
+        return currentClipboardItemIdentifier == itemID
+    }
+
+    private func markCurrentClipboardItem(_ item: ClipboardItem) {
+        currentClipboardItemIdentifier = item.id
+    }
+
+    private func refreshCurrentClipboardMarker(from pasteboard: NSPasteboard) {
+        let settings = ClipboardSettings.load()
+        guard !containsProtectedPasteboardType(pasteboard),
+              !containsOnlyIgnoredInternalTypes(pasteboard, settings: settings),
+              let probeItem = captureItem(from: pasteboard, settings: settings) else {
+            currentClipboardItemIdentifier = nil
+            return
+        }
+
+        defer {
+            context.delete(probeItem)
+        }
+
+        currentClipboardItemIdentifier = findDuplicate(of: probeItem)?.id
     }
 
     private func captureItem(
@@ -619,6 +661,90 @@ final class ClipboardMonitor: ObservableObject {
         }
 
         item.updateContentIdentity()
+    }
+
+    private func scheduleMetadataEnrichment(
+        for item: ClipboardItem,
+        settings: ClipboardSettings
+    ) {
+        guard shouldEnrichMetadata(for: item, settings: settings),
+              let itemIdentifier = item.id else {
+            return
+        }
+
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            guard !Task.isCancelled else {
+                return
+            }
+            await self?.enrichMetadata(for: itemIdentifier)
+        }
+    }
+
+    private func enrichMetadata(for itemIdentifier: UUID) async {
+        let settings = ClipboardSettings.load()
+        guard settings.appleIntelligenceSuggestionsEnabled,
+              let item = fetchItem(with: itemIdentifier),
+              shouldEnrichMetadata(for: item, settings: settings) else {
+            return
+        }
+
+        let metadata = await ClipboardMetadataSuggestionService().suggestions(for: item)
+        ClipboardGeneratedMetadataStore.save(metadata, for: itemIdentifier)
+
+        guard settings.appleIntelligenceAppliesSuggestionsAutomatically else {
+            return
+        }
+
+        if item.isSensitive && settings.appleIntelligenceReviewsSensitiveItems {
+            return
+        }
+
+        var acceptedMetadata = metadata
+        acceptedMetadata.status = .accepted
+        let changed = item.applyGeneratedMetadata(acceptedMetadata)
+        ClipboardGeneratedMetadataStore.save(acceptedMetadata, for: itemIdentifier)
+
+        guard changed else {
+            return
+        }
+
+        do {
+            try context.save()
+            ClipboardSpotlightIndexer.shared.indexItem(item)
+        } catch {
+            context.rollback()
+            logger.error(
+                "Failed to apply generated metadata: \(error.localizedDescription, privacy: .public)"
+            )
+        }
+    }
+
+    private func shouldEnrichMetadata(
+        for item: ClipboardItem,
+        settings: ClipboardSettings
+    ) -> Bool {
+        guard settings.appleIntelligenceSuggestionsEnabled,
+              item.id != nil,
+              item.isDeleted == false,
+              item.isSensitive == false else {
+            return false
+        }
+
+        if let appRule = settings.appRule(for: item.sourceBundleIdentifier),
+           appRule.concealsPreviews || appRule.ignoresClipboard || appRule.skipsAppleIntelligence {
+            return false
+        }
+
+        return item.type != ClipboardItemType.unknown
+            && item.type != ClipboardItemType.data
+    }
+
+    private func fetchItem(with identifier: UUID) -> ClipboardItem? {
+        let request = ClipboardItem.fetchRequest()
+        request.fetchLimit = 1
+        request.predicate = NSPredicate(format: "id == %@", identifier as CVarArg)
+        return try? context.fetch(request).first
     }
 
     private func captureTypedData(

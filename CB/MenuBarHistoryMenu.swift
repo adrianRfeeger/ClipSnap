@@ -30,15 +30,16 @@ struct MenuBarHistoryMenu: View {
                 .foregroundStyle(.secondary)
         } else {
             ForEach(recentItems) { item in
+                let isCurrent = clipboardMonitor.isCurrentClipboardItem(item)
                 Button {
                     clipboardMonitor.copyToClipboard(item)
                 } label: {
                     Label {
-                        Text(item.protectedMenuTitle)
+                        Text(isCurrent ? "\(item.protectedMenuTitle) ✓" : item.protectedMenuTitle)
                     } icon: {
-                        MenuBarClipboardItemIcon(item: item)
+                        MenuBarClipboardItemIcon(item: item, isCurrentClipboardItem: isCurrent)
                     }
-                    Text(item.displayType)
+                    Text(isCurrent ? "\(item.displayType) • Current" : item.displayType)
                 }
                 .labelStyle(.titleAndIcon)
             }
@@ -273,9 +274,12 @@ private struct MenuBarCaptureStatus: View {
 
 private struct MenuBarClipboardItemIcon: View {
     @ObservedObject var item: ClipboardItem
+    let isCurrentClipboardItem: Bool
 
     var body: some View {
-        if item.shouldProtectPreview {
+        if isCurrentClipboardItem {
+            Image(systemName: "checkmark.circle.fill")
+        } else if item.shouldProtectPreview {
             Image(systemName: "eye.slash.fill")
         } else if let image = thumbnailImage {
             Image(nsImage: image)

@@ -1,4 +1,5 @@
 import CryptoKit
+import CoreData
 import Foundation
 
 struct ClipboardRepresentationPayload: Sendable, Equatable {
@@ -85,6 +86,265 @@ enum ClipboardContentHasher {
         if let value {
             data.append(value)
         }
+    }
+}
+
+struct ClipboardSyncPackage: Codable, Equatable, Sendable {
+    static let currentSchemaVersion = 1
+
+    var schemaVersion: Int
+    var item: ClipboardSyncPackageItem
+    var representations: [ClipboardSyncPackageRepresentation]
+
+    init(
+        schemaVersion: Int = Self.currentSchemaVersion,
+        item: ClipboardSyncPackageItem,
+        representations: [ClipboardSyncPackageRepresentation]
+    ) {
+        self.schemaVersion = schemaVersion
+        self.item = item
+        self.representations = representations
+    }
+
+    @MainActor
+    init(item: ClipboardItem) {
+        self.schemaVersion = Self.currentSchemaVersion
+        self.item = ClipboardSyncPackageItem(item: item)
+        self.representations = item.sortedRepresentations.map(ClipboardSyncPackageRepresentation.init)
+    }
+
+    var itemIdentifier: UUID {
+        item.id
+    }
+
+    var contentHash: String {
+        item.contentHash
+    }
+
+    func encodedData() throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        encoder.dateEncodingStrategy = .iso8601
+        return try encoder.encode(self)
+    }
+
+    static func decode(from data: Data) throws -> ClipboardSyncPackage {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try decoder.decode(ClipboardSyncPackage.self, from: data)
+    }
+
+    @discardableResult
+    func makeClipboardItem(
+        in context: NSManagedObjectContext,
+        preservesIdentifier: Bool = true
+    ) -> ClipboardItem {
+        let item = ClipboardItem.make(
+            in: context,
+            type: self.item.type,
+            plainText: self.item.plainText,
+            previewText: self.item.previewText,
+            imageData: self.item.imageData,
+            thumbnailData: self.item.thumbnailData,
+            rawData: self.item.rawData,
+            utiType: self.item.utiType,
+            sourceApp: self.item.sourceApp,
+            sourceBundleIdentifier: self.item.sourceBundleIdentifier
+        )
+        item.id = preservesIdentifier ? self.item.id : UUID()
+        item.createdAt = self.item.createdAt
+        item.updatedAt = self.item.updatedAt
+        item.customTitle = self.item.customTitle
+        item.notes = self.item.notes
+        item.tagsText = self.item.tagsText
+        item.collectionName = self.item.collectionName
+        item.isPinned = self.item.isPinned
+        item.isFavorite = self.item.isFavorite
+        item.isArchived = self.item.isArchived
+        item.isSensitive = self.item.isSensitive
+        item.isLocalOnly = self.item.isLocalOnly
+        item.recognizedText = self.item.recognizedText
+        item.relatedItemIdentifier = self.item.relatedItemIdentifier
+        item.byteCount = self.item.byteCount
+        item.contentHash = self.item.contentHash
+
+        for representation in representations {
+            representation.makeClipboardRepresentation(for: item, in: context)
+        }
+        return item
+    }
+}
+
+enum ClipboardSyncMergeResult: Equatable {
+    case inserted
+    case updatedMetadata
+    case preservedConflict
+    case unchanged
+}
+
+enum ClipboardSyncDeleteResolution: Equatable {
+    case deleteLocal
+    case keepNewerLocal
+    case missingLocal
+}
+
+enum ClipboardSyncConflictResolver {
+    @MainActor
+    @discardableResult
+    static func merge(
+        package: ClipboardSyncPackage,
+        existingItem: ClipboardItem?,
+        in context: NSManagedObjectContext
+    ) -> (item: ClipboardItem?, result: ClipboardSyncMergeResult) {
+        guard let existingItem else {
+            return (package.makeClipboardItem(in: context), .inserted)
+        }
+
+        if existingItem.contentHash == package.contentHash {
+            guard package.item.updatedAt > (existingItem.updatedAt ?? .distantPast) else {
+                return (existingItem, .unchanged)
+            }
+
+            applyMetadata(from: package, to: existingItem)
+            return (existingItem, .updatedMetadata)
+        }
+
+        let conflict = package.makeClipboardItem(in: context, preservesIdentifier: false)
+        conflict.relatedItemIdentifier = existingItem.id?.uuidString
+        if conflict.customTitle?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true {
+            conflict.customTitle = "\(conflict.displayTitle) (Conflict)"
+        } else if let customTitle = conflict.customTitle,
+                  !customTitle.localizedCaseInsensitiveContains("conflict") {
+            conflict.customTitle = "\(customTitle) (Conflict)"
+        }
+        return (conflict, .preservedConflict)
+    }
+
+    @MainActor
+    static func resolveDeleteMarker(
+        _ marker: ClipboardSyncDeleteMarker,
+        existingItem: ClipboardItem?
+    ) -> ClipboardSyncDeleteResolution {
+        guard let existingItem else {
+            return .missingLocal
+        }
+
+        let localUpdatedAt = existingItem.updatedAt ?? existingItem.createdAt ?? .distantPast
+        if localUpdatedAt > marker.updatedAt {
+            return .keepNewerLocal
+        }
+
+        return .deleteLocal
+    }
+
+    @MainActor
+    private static func applyMetadata(
+        from package: ClipboardSyncPackage,
+        to item: ClipboardItem
+    ) {
+        item.customTitle = package.item.customTitle
+        item.notes = package.item.notes
+        item.tagsText = package.item.tagsText
+        item.collectionName = package.item.collectionName
+        item.isPinned = package.item.isPinned
+        item.isFavorite = package.item.isFavorite
+        item.isArchived = package.item.isArchived
+        item.isSensitive = package.item.isSensitive
+        item.recognizedText = package.item.recognizedText
+        item.relatedItemIdentifier = package.item.relatedItemIdentifier
+        item.updatedAt = package.item.updatedAt
+    }
+}
+
+struct ClipboardSyncPackageItem: Codable, Equatable, Sendable {
+    var id: UUID
+    var type: String
+    var plainText: String?
+    var previewText: String?
+    var customTitle: String?
+    var notes: String?
+    var tagsText: String?
+    var collectionName: String?
+    var utiType: String?
+    var rawData: Data?
+    var imageData: Data?
+    var thumbnailData: Data?
+    var sourceApp: String?
+    var sourceBundleIdentifier: String?
+    var createdAt: Date
+    var updatedAt: Date
+    var byteCount: Int64
+    var contentHash: String
+    var isPinned: Bool
+    var isFavorite: Bool
+    var isArchived: Bool
+    var isSensitive: Bool
+    var isLocalOnly: Bool
+    var recognizedText: String?
+    var relatedItemIdentifier: String?
+
+    @MainActor
+    init(item: ClipboardItem) {
+        self.id = item.id ?? UUID()
+        self.type = item.type ?? ClipboardItemType.unknown
+        self.plainText = item.plainText
+        self.previewText = item.previewText
+        self.customTitle = item.customTitle
+        self.notes = item.notes
+        self.tagsText = item.tagsText
+        self.collectionName = item.collectionName
+        self.utiType = item.utiType
+        self.rawData = item.rawData
+        self.imageData = item.imageData
+        self.thumbnailData = item.thumbnailData
+        self.sourceApp = item.sourceApp
+        self.sourceBundleIdentifier = item.sourceBundleIdentifier
+        self.createdAt = item.createdAt ?? Date()
+        self.updatedAt = item.updatedAt ?? item.createdAt ?? Date()
+        self.byteCount = item.byteCount
+        self.contentHash = item.contentHash ?? ""
+        self.isPinned = item.isPinned
+        self.isFavorite = item.isFavorite
+        self.isArchived = item.isArchived
+        self.isSensitive = item.isSensitive
+        self.isLocalOnly = item.isLocalOnly
+        self.recognizedText = item.recognizedText
+        self.relatedItemIdentifier = item.relatedItemIdentifier
+    }
+}
+
+struct ClipboardSyncPackageRepresentation: Codable, Equatable, Sendable {
+    var itemIndex: Int
+    var order: Int
+    var utiIdentifier: String
+    var data: Data?
+    var stringValue: String?
+    var byteCount: Int64
+
+    @MainActor
+    init(representation: ClipboardRepresentation) {
+        self.itemIndex = Int(representation.itemIndex)
+        self.order = Int(representation.order)
+        self.utiIdentifier = representation.utiIdentifier ?? ClipboardItemType.unknown
+        self.data = representation.data
+        self.stringValue = representation.stringValue
+        self.byteCount = representation.byteCount
+    }
+
+    @discardableResult
+    func makeClipboardRepresentation(
+        for item: ClipboardItem,
+        in context: NSManagedObjectContext
+    ) -> ClipboardRepresentation {
+        let representation = ClipboardRepresentation(context: context)
+        representation.item = item
+        representation.itemIndex = Int16(itemIndex)
+        representation.order = Int16(order)
+        representation.utiIdentifier = utiIdentifier
+        representation.data = data
+        representation.stringValue = stringValue
+        representation.byteCount = byteCount
+        return representation
     }
 }
 

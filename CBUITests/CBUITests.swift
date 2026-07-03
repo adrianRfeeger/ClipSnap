@@ -58,6 +58,62 @@ final class CBUITests: XCTestCase {
     }
 
     @MainActor
+    func testBuiltInSavedFilterNarrowsHistory() throws {
+        let app = makeApplication()
+        app.launch()
+
+        XCTAssertTrue(app.otherElements["clipboard.main"].waitForExistence(timeout: 5))
+
+        let savedFiltersMenu = app.buttons["clipboard.savedFilters.menu"]
+        XCTAssertTrue(savedFiltersMenu.waitForExistence(timeout: 2))
+        savedFiltersMenu.click()
+
+        let favoritesItem = app.menuItems["Favorites"]
+        XCTAssertTrue(favoritesItem.waitForExistence(timeout: 2))
+        favoritesItem.click()
+
+        XCTAssertTrue(app.staticTexts["UI Test URL"].waitForExistence(timeout: 2))
+        XCTAssertFalse(app.staticTexts["UI Test Note"].exists)
+    }
+
+    @MainActor
+    func testCaptureMenuExposesCaptureAndRecordingControls() throws {
+        let app = makeApplication()
+        app.launch()
+
+        XCTAssertTrue(app.otherElements["clipboard.main"].waitForExistence(timeout: 5))
+
+        let captureMenu = app.buttons["clipboard.capture.menu"]
+        XCTAssertTrue(captureMenu.waitForExistence(timeout: 2))
+        captureMenu.click()
+
+        XCTAssertTrue(app.menuItems["Capture Region"].waitForExistence(timeout: 2))
+        XCTAssertTrue(app.menuItems["Capture Display"].exists)
+        XCTAssertTrue(app.menuItems["Record Display"].exists)
+    }
+
+    @MainActor
+    func testSettingsExposeSetupDiagnosticsAndCleanupSurfaces() throws {
+        let app = makeApplication()
+        app.launch()
+
+        XCTAssertTrue(app.otherElements["clipboard.main"].waitForExistence(timeout: 5))
+        app.typeKey(",", modifierFlags: .command)
+
+        XCTAssertTrue(app.buttons["settings.setup.open"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.buttons["settings.diagnostics.copy"].exists)
+
+        app.buttons["settings.setup.open"].click()
+        XCTAssertTrue(app.otherElements["setup.main"].waitForExistence(timeout: 2))
+
+        app.buttons["Done"].click()
+        XCTAssertTrue(app.buttons["settings.setup.open"].waitForExistence(timeout: 2))
+
+        app.buttons["Storage"].click()
+        XCTAssertTrue(app.buttons["settings.health.cleanup.menu"].waitForExistence(timeout: 2))
+    }
+
+    @MainActor
     func testLaunchPerformance() throws {
         // This measures how long it takes to launch your application.
         measure(metrics: [XCTApplicationLaunchMetric()]) {
@@ -65,9 +121,24 @@ final class CBUITests: XCTestCase {
         }
     }
 
-    private func makeApplication() -> XCUIApplication {
+    @MainActor
+    func testQuickPickerPerformanceWithLargeHistory() throws {
+        measure(metrics: [XCTClockMetric()]) {
+            let app = makeApplication(arguments: ["--ui-testing-large-history"])
+            app.launch()
+            XCTAssertTrue(app.otherElements["clipboard.main"].waitForExistence(timeout: 5))
+
+            app.typeKey("v", modifierFlags: [.command, .shift])
+            XCTAssertTrue(app.otherElements["quickClipboard.main"].waitForExistence(timeout: 3))
+
+            app.typeKey(.escape, modifierFlags: [])
+            app.terminate()
+        }
+    }
+
+    private func makeApplication(arguments: [String] = []) -> XCUIApplication {
         let app = XCUIApplication()
-        app.launchArguments = ["--ui-testing"]
+        app.launchArguments = ["--ui-testing"] + arguments
         return app
     }
 }
