@@ -157,6 +157,8 @@ struct ClipSnapApp: App {
                     .disabled(!screenCaptureService.isRecording && !screenCaptureService.isRecordingPaused)
                 }
             }
+
+            ClipSnapHelpCommands()
         }
 
         MenuBarExtra("ClipSnap", systemImage: "clipboard") {
@@ -188,6 +190,166 @@ struct ClipSnapApp: App {
                 screenCaptureService: screenCaptureService
             )
                 .environment(\.managedObjectContext, persistenceController.container.viewContext)
+        }
+
+        Window("ClipSnap Help", id: ClipSnapHelpView.sceneID) {
+            ClipSnapHelpView()
+        }
+        .defaultSize(width: 680, height: 620)
+    }
+}
+
+private struct ClipSnapHelpCommands: Commands {
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some Commands {
+        CommandGroup(replacing: .help) {
+            Button("ClipSnap Help") {
+                openWindow(id: ClipSnapHelpView.sceneID)
+                NSApp.activate(ignoringOtherApps: true)
+            }
+            .keyboardShortcut("?", modifiers: [.command])
+
+            Divider()
+
+            Button("Capture Help") {
+                openWindow(id: ClipSnapHelpView.sceneID)
+                NSApp.activate(ignoringOtherApps: true)
+            }
+
+            Button("Sync Help") {
+                openWindow(id: ClipSnapHelpView.sceneID)
+                NSApp.activate(ignoringOtherApps: true)
+            }
+
+            Divider()
+
+            Button("Open Settings") {
+                NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+                NSApp.activate(ignoringOtherApps: true)
+            }
+            .keyboardShortcut(",", modifiers: [.command])
+        }
+    }
+}
+
+private struct ClipSnapHelpView: View {
+    static let sceneID = "clipsnap-help"
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 22) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Label("ClipSnap Help", systemImage: "questionmark.circle")
+                        .font(.largeTitle.weight(.semibold))
+                    Text("Clipboard history, capture, OCR, annotation, and local sync for macOS.")
+                        .foregroundStyle(.secondary)
+                }
+
+                HelpSection(
+                    title: "Clipboard History",
+                    systemImage: "clipboard",
+                    rows: [
+                        "Copy normally in any app. ClipSnap stores eligible clipboard items automatically.",
+                        "Use the main window, menu bar, Dock menu, or quick picker to copy previous items back to the system clipboard.",
+                        "A checkmark marks the item that is currently on the system clipboard.",
+                        "Pin, favorite, archive, tag, collect, and search items to keep history manageable."
+                    ]
+                )
+
+                HelpSection(
+                    title: "Capture",
+                    systemImage: "camera.viewfinder",
+                    rows: [
+                        "Use Capture from the app menu, menu bar, or Dock menu for region, window, application, and display screenshots.",
+                        "Use Delayed Capture when you need time to open a menu or prepare the screen.",
+                        "Use Text from Region to run OCR and save recognized text as a clipboard item.",
+                        "Display Recording supports Start, Pause, Continue, Stop, and Cancel controls from the Capture menu."
+                    ]
+                )
+
+                HelpSection(
+                    title: "Image Editing",
+                    systemImage: "pencil.tip.crop.circle",
+                    rows: [
+                        "Open an image item and choose Edit Image to crop, rotate, flip, redact, draw shapes, add arrows, highlight, or add text.",
+                        "Annotations are editable vector objects while you are working in the editor.",
+                        "Save writes the edited image back to the selected clipboard item."
+                    ]
+                )
+
+                HelpSection(
+                    title: "Privacy",
+                    systemImage: "hand.raised",
+                    rows: [
+                        "Exclude apps from Settings > Privacy when their clipboard contents should not be stored.",
+                        "Sensitive-content detection can reject likely secrets such as one-time codes, tokens, private keys, and payment-card values.",
+                        "Sensitive previews can be concealed to reduce accidental exposure.",
+                        "Archived, sensitive, and local-only items are not indexed in Spotlight."
+                    ]
+                )
+
+                HelpSection(
+                    title: "Sync",
+                    systemImage: "folder",
+                    rows: [
+                        "The visible sync option is Local Folder Sync in Settings > Sync.",
+                        "Choose a folder and use Export Now or Import Now to move portable ClipSnap packages through Dropbox, Syncthing, OneDrive folder sync, NAS shares, external drives, or a manual backup folder.",
+                        "Sensitive and local-only items are skipped by local folder sync."
+                    ]
+                )
+
+                HelpSection(
+                    title: "Apple Intelligence Suggestions",
+                    systemImage: "sparkles",
+                    rows: [
+                        "When available, ClipSnap can suggest titles, tags, collections, and summaries.",
+                        "Suggestions stay reviewable unless auto-apply is enabled in Settings > Automation.",
+                        "ClipSnap falls back to local rules when Apple Intelligence is unavailable."
+                    ]
+                )
+
+                HelpSection(
+                    title: "Keyboard Shortcuts",
+                    systemImage: "keyboard",
+                    rows: [
+                        "Command-Shift-V opens the Quick Clipboard picker.",
+                        "Command-Shift-4 captures a region.",
+                        "Command-Shift-5 captures a window.",
+                        "Command-Shift-6 captures text from a region.",
+                        "Command-? opens this help window."
+                    ]
+                )
+            }
+            .padding(28)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+}
+
+private struct HelpSection: View {
+    let title: String
+    let systemImage: String
+    let rows: [String]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label(title, systemImage: systemImage)
+                .font(.headline)
+
+            VStack(alignment: .leading, spacing: 7) {
+                ForEach(rows, id: \.self) { row in
+                    HStack(alignment: .top, spacing: 8) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .padding(.top, 2)
+                        Text(row)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+            .foregroundStyle(.secondary)
         }
     }
 }
