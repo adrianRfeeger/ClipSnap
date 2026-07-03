@@ -333,7 +333,7 @@ struct ContentView: View {
                             }
 
                             if selectedItems.count == 1, let item = selectedItems.first {
-                                Button(item.isLocalOnly ? "Move to iCloud" : "Keep on This Mac") {
+                                Button(item.isLocalOnly ? "Use Default Storage" : "Keep on This Mac") {
                                     move(item, localOnly: !item.isLocalOnly)
                                 }
                             }
@@ -421,10 +421,6 @@ struct ContentView: View {
                     },
                     localOnlyAction: {
                         move(selectedItem, localOnly: !selectedItem.isLocalOnly)
-                    },
-                    syncState: cloudSyncMonitor.syncState(for: selectedItem),
-                    retrySyncAction: {
-                        retrySync(for: selectedItem)
                     },
                     saveMetadataAction: {
                         selectedItem.updatedAt = Date()
@@ -518,7 +514,6 @@ struct ContentView: View {
             )
         ) {
             ClipSnapSetupView(
-                cloudSyncMonitor: cloudSyncMonitor,
                 screenCaptureService: screenCaptureService
             ) {
                 hasCompletedSetup = true
@@ -832,17 +827,6 @@ struct ContentView: View {
         selectedItemIdentifiers = [identifier]
     }
 
-    private func retrySync(for item: ClipboardItem) {
-        guard !item.isLocalOnly, !item.isSensitive else {
-            return
-        }
-        item.updatedAt = Date()
-        saveContext()
-        Task {
-            await cloudSyncMonitor.refreshAccountStatus()
-        }
-    }
-
     private func performExport(_ action: () throws -> Void) {
         do {
             try action()
@@ -1080,8 +1064,6 @@ private struct ClipboardDetailView: View {
     let favoriteAction: () -> Void
     let archiveAction: () -> Void
     let localOnlyAction: () -> Void
-    let syncState: ClipboardItemSyncState
-    let retrySyncAction: () -> Void
     let saveMetadataAction: () -> Void
     let saveTextAction: (String) -> Void
     let recognizeTextAction: () -> Void
@@ -1171,8 +1153,8 @@ private struct ClipboardDetailView: View {
 
                 Button(action: localOnlyAction) {
                     Label(
-                        item.isLocalOnly ? "Move to iCloud" : "Keep on This Mac",
-                        systemImage: item.isLocalOnly ? "icloud.and.arrow.up" : "macbook"
+                        item.isLocalOnly ? "Use Default Storage" : "Keep on This Mac",
+                        systemImage: item.isLocalOnly ? "arrow.triangle.2.circlepath" : "macbook"
                     )
                 }
 
@@ -1396,23 +1378,8 @@ private struct ClipboardDetailView: View {
                     .foregroundStyle(.secondary)
                 Label(
                     item.storageLocationDescription,
-                    systemImage: item.isLocalOnly ? "macbook" : "icloud"
+                    systemImage: item.isLocalOnly ? "macbook" : "internaldrive"
                 )
-            }
-
-            GridRow {
-                Text("Sync")
-                    .foregroundStyle(.secondary)
-                HStack(spacing: 6) {
-                    Label(syncState.title, systemImage: syncState.systemImageName)
-                    if case .pending = syncState {
-                        Button("Retry", action: retrySyncAction)
-                            .buttonStyle(.link)
-                    } else if case .error = syncState {
-                        Button("Retry", action: retrySyncAction)
-                            .buttonStyle(.link)
-                    }
-                }
             }
 
             if let rawData = item.rawData {

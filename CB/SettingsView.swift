@@ -570,16 +570,7 @@ struct SettingsView: View {
             }
 
             Form {
-                iCloudSyncSection
                 localFolderSyncSection
-
-                if !cloudSyncMonitor.recentEvents.isEmpty {
-                    Section("Recent Activity") {
-                        ForEach(cloudSyncMonitor.recentEvents) { event in
-                            CloudSyncEventRow(event: event)
-                        }
-                    }
-                }
             }
             .formStyle(.grouped)
             .tabItem {
@@ -655,7 +646,6 @@ struct SettingsView: View {
         }
         .sheet(isPresented: $isShowingSetup) {
             ClipSnapSetupView(
-                cloudSyncMonitor: cloudSyncMonitor,
                 screenCaptureService: screenCaptureService
             ) {
                 isShowingSetup = false
@@ -775,66 +765,6 @@ struct SettingsView: View {
             from: clipboardItems.map { ClipboardHealthItem(item: $0) },
             storageLimitMegabytes: maximumStorageMegabytes
         )
-    }
-
-    private var iCloudSyncSection: some View {
-        Section {
-            LabeledContent("Status") {
-                Label(
-                    cloudSyncMonitor.state.title,
-                    systemImage: cloudSyncMonitor.state.systemImageName
-                )
-            }
-
-            if let lastSuccessfulSync = cloudSyncMonitor.lastSuccessfulSync {
-                LabeledContent("Last Successful Sync") {
-                    Text(lastSuccessfulSync.formatted(date: .abbreviated, time: .standard))
-                }
-            }
-
-            if let lastSuccessfulExport = cloudSyncMonitor.lastSuccessfulExport {
-                LabeledContent("Last Upload") {
-                    Text(lastSuccessfulExport.formatted(date: .abbreviated, time: .standard))
-                }
-            }
-
-            if let lastSuccessfulImport = cloudSyncMonitor.lastSuccessfulImport {
-                LabeledContent("Last Download") {
-                    Text(lastSuccessfulImport.formatted(date: .abbreviated, time: .standard))
-                }
-            }
-
-            if let lastErrorDescription = cloudSyncMonitor.lastErrorDescription {
-                LabeledContent("Last Error") {
-                    Text(lastErrorDescription)
-                        .lineLimit(2)
-                        .textSelection(.enabled)
-                }
-            }
-
-            if cloudSyncMonitor.containerIdentifiers.isEmpty {
-                Text("Add the iCloud capability with CloudKit to the app target, select a private CloudKit container, and enable Remote notifications.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            } else {
-                DisclosureGroup("CloudKit Containers") {
-                    ForEach(cloudSyncMonitor.containerIdentifiers, id: \.self) { identifier in
-                        Text(identifier)
-                            .textSelection(.enabled)
-                    }
-                }
-
-                Button("Refresh iCloud Status") {
-                    Task {
-                        await cloudSyncMonitor.refreshAccountStatus()
-                    }
-                }
-            }
-        } header: {
-            Label("iCloud Sync", systemImage: "icloud")
-        } footer: {
-            Text("Native iCloud sync uses the app’s CloudKit container and continues to work independently of other sync providers.")
-        }
     }
 
     private var localFolderSyncSection: some View {
@@ -1407,7 +1337,6 @@ struct SettingsView: View {
 }
 
 struct ClipSnapSetupView: View {
-    @ObservedObject var cloudSyncMonitor: CloudSyncMonitor
     @ObservedObject var screenCaptureService: ScreenCaptureService
     let completionAction: () -> Void
 
@@ -1451,19 +1380,6 @@ struct ClipSnapSetupView: View {
                 }
 
                 setupRow(
-                    title: "iCloud Sync",
-                    detail: "Local clipboard history works even when iCloud is unavailable.",
-                    systemImage: cloudSyncMonitor.state.systemImageName,
-                    status: cloudSyncMonitor.state.title
-                ) {
-                    Button("Refresh") {
-                        Task {
-                            await cloudSyncMonitor.refreshAccountStatus()
-                        }
-                    }
-                }
-
-                setupRow(
                     title: "Privacy Defaults",
                     detail: "Internal app metadata is ignored and sensitive previews can stay concealed.",
                     systemImage: "hand.raised",
@@ -1488,9 +1404,6 @@ struct ClipSnapSetupView: View {
         .padding(22)
         .frame(width: 620)
         .accessibilityIdentifier("setup.main")
-        .task {
-            await cloudSyncMonitor.refreshAccountStatus()
-        }
     }
 
     private var privacyStatus: String {

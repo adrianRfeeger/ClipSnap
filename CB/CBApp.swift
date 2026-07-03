@@ -63,7 +63,6 @@ struct ClipSnapApp: App {
                 .onAppear {
                     if !isUITesting {
                         clipboardMonitor.start()
-                        cloudSyncMonitor.start()
                     }
                 }
         }
@@ -170,7 +169,6 @@ struct ClipSnapApp: App {
                 .onAppear {
                     if !isUITesting {
                         clipboardMonitor.start()
-                        cloudSyncMonitor.start()
                     }
                 }
         }
@@ -190,11 +188,6 @@ struct ClipSnapApp: App {
                 screenCaptureService: screenCaptureService
             )
                 .environment(\.managedObjectContext, persistenceController.container.viewContext)
-                .onAppear {
-                    if !isUITesting {
-                        cloudSyncMonitor.start()
-                    }
-                }
         }
     }
 }
@@ -370,12 +363,6 @@ final class ClipSnapDockMenuDelegate: NSObject, NSApplicationDelegate {
         let captureItem = NSMenuItem(title: "Capture", action: nil, keyEquivalent: "")
         captureItem.submenu = captureMenu
         menu.addItem(captureItem)
-
-        let syncItem = menu.addDisabledItem(title: cloudSyncMonitor?.state.title ?? "Sync Unavailable")
-        syncItem.image = NSImage(
-            systemSymbolName: cloudSyncMonitor?.state.systemImageName ?? "icloud.slash",
-            accessibilityDescription: "Sync Status"
-        )
     }
 
     private func appendMonitoringItems(to menu: NSMenu) {

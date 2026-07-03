@@ -900,7 +900,7 @@ extension ClipboardItem {
     }
 
     var storageLocationDescription: String {
-        isLocalOnly ? "On This Mac" : "iCloud"
+        isLocalOnly ? "On This Mac" : "Default Storage"
     }
 
     var tags: [String] {

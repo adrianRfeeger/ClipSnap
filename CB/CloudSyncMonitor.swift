@@ -440,7 +440,7 @@ enum ClipboardItemSyncState: Equatable {
         case .synced:
             return "Synced"
         case .unavailable:
-            return "iCloud Unavailable"
+            return "Sync Unavailable"
         case .error:
             return "Sync Error"
         }
@@ -451,13 +451,13 @@ enum ClipboardItemSyncState: Equatable {
         case .localOnly:
             return "macbook"
         case .pending:
-            return "arrow.up.icloud"
+            return "arrow.triangle.2.circlepath"
         case .synced:
-            return "checkmark.icloud"
+            return "checkmark.circle"
         case .unavailable:
-            return "icloud.slash"
+            return "arrow.triangle.2.circlepath.circle"
         case .error:
-            return "exclamationmark.icloud"
+            return "exclamationmark.triangle"
         }
     }
 }

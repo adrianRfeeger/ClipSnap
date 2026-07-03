@@ -181,8 +181,6 @@ struct MenuBarHistoryMenu: View {
             }
         }
 
-        Label(cloudSyncMonitor.state.title, systemImage: cloudSyncMonitor.state.systemImageName)
-
         if clipboardMonitor.isMonitoring {
             Menu("Pause Monitoring") {
                 Button("5 Minutes") {
