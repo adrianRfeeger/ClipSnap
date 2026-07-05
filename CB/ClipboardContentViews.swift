@@ -257,21 +257,8 @@ private struct HTMLFormattedClipboardPreview: View {
             Group {
                 switch mode {
                 case .rendered:
-                    VStack(spacing: 0) {
-                        HTMLClipboardPreview(htmlString: htmlString, fallbackText: displayText)
-                            .frame(maxWidth: .infinity, minHeight: 280)
-
-                        if !displayText.isEmpty {
-                            Divider()
-                            ScrollView {
-                                Text(displayText)
-                                    .textSelection(.enabled)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .padding(10)
-                            }
-                            .frame(maxHeight: 160)
-                        }
-                    }
+                    HTMLClipboardPreview(htmlString: htmlString, fallbackText: displayText)
+                        .frame(maxWidth: .infinity, minHeight: 280)
                 case .text:
                     ScrollView {
                         Text(displayText)
