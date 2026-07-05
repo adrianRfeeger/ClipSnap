@@ -26,7 +26,7 @@ ClipSnap is a native macOS clipboard and capture manager built with SwiftUI, App
 - Source-application tracking and application exclusions.
 - Sensitive-content filtering for common secrets, codes, and payment-card patterns.
 - Optional Spotlight indexing for non-sensitive, non-archived history.
-- Local folder sync packages for Dropbox, Syncthing, OneDrive folder sync, NAS shares, external drives, and manual backup/restore.
+- Automatic or manual local folder sync packages for Dropbox, Syncthing, OneDrive folder sync, NAS shares, external drives, and backup/restore.
 - Optional Apple Intelligence suggestions for titles, tags, collections, and summaries when available on the Mac.
 
 ## Requirements
@@ -115,7 +115,7 @@ Sensitive-content detection is heuristic and cannot guarantee that every secret 
 
 ## Sync
 
-The visible sync option is **Local Folder Sync**. Choose a folder in Settings > Sync, then use Export Now and Import Now to move portable ClipSnap packages through a folder-backed service or storage location.
+The visible sync option is **Local Folder Sync**. Choose a folder in Settings > Sync, then enable automatic sync for periodic background updates or use Sync Now, Export Now, and Import Now for explicit control.
 
 Good folder targets include:
 

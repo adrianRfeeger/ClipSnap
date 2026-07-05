@@ -424,6 +424,134 @@ struct SyncProviderRegistry {
     }
 }
 
+struct ClipboardLocalFolderSyncSummary: Equatable {
+    var exportedCount = 0
+    var insertedCount = 0
+    var updatedCount = 0
+    var deletedCount = 0
+    var conflictCount = 0
+    var keptNewerLocalCount = 0
+
+    var exportMessage: String {
+        exportedCount == 1
+            ? "Exported 1 item to local folder."
+            : "Exported \(exportedCount) items to local folder."
+    }
+
+    var importMessage: String {
+        "Imported \(insertedCount), updated \(updatedCount), deleted \(deletedCount), preserved \(conflictCount) conflict\(conflictCount == 1 ? "" : "s"), kept \(keptNewerLocalCount) newer local."
+    }
+
+    var syncMessage: String {
+        "\(importMessage) \(exportMessage)"
+    }
+}
+
+enum ClipboardLocalFolderSyncService {
+    @MainActor
+    static func exportItems(
+        in context: NSManagedObjectContext,
+        provider: ClipboardLocalFolderSyncProvider
+    ) async throws -> ClipboardLocalFolderSyncSummary {
+        let items = try fetchClipboardItems(in: context)
+        let exportableItems = items.filter {
+            !$0.isLocalOnly && !$0.isSensitive
+        }
+
+        for item in exportableItems {
+            try await provider.upload(ClipboardSyncPackage(item: item))
+        }
+
+        return ClipboardLocalFolderSyncSummary(exportedCount: exportableItems.count)
+    }
+
+    @MainActor
+    static func importItems(
+        in context: NSManagedObjectContext,
+        provider: ClipboardLocalFolderSyncProvider
+    ) async throws -> ClipboardLocalFolderSyncSummary {
+        let items = try fetchClipboardItems(in: context)
+        let deleteMarkers = try await provider.downloadDeleteMarkers(since: nil)
+        let packages = try await provider.downloadPackages(since: nil)
+        var existingItems = Dictionary(
+            uniqueKeysWithValues: items.compactMap { item in
+                item.id.map { ($0, item) }
+            }
+        )
+        var changedItems: [ClipboardItem] = []
+        var summary = ClipboardLocalFolderSyncSummary()
+
+        for marker in deleteMarkers {
+            let resolution = ClipboardSyncConflictResolver.resolveDeleteMarker(
+                marker,
+                existingItem: existingItems[marker.itemIdentifier]
+            )
+            switch resolution {
+            case .deleteLocal:
+                if let item = existingItems[marker.itemIdentifier] {
+                    ClipboardSpotlightIndexer.shared.deleteIdentifiers(
+                        item.id.map { [$0.uuidString] } ?? []
+                    )
+                    context.delete(item)
+                    existingItems.removeValue(forKey: marker.itemIdentifier)
+                    summary.deletedCount += 1
+                }
+            case .keepNewerLocal:
+                summary.keptNewerLocalCount += 1
+            case .missingLocal:
+                break
+            }
+        }
+
+        for package in packages {
+            guard existingItems[package.itemIdentifier]?.isDeleted != true else {
+                continue
+            }
+            let merge = ClipboardSyncConflictResolver.merge(
+                package: package,
+                existingItem: existingItems[package.itemIdentifier],
+                in: context
+            )
+            if let item = merge.item,
+               merge.result != .unchanged {
+                changedItems.append(item)
+            }
+
+            switch merge.result {
+            case .inserted:
+                summary.insertedCount += 1
+            case .updatedMetadata:
+                summary.updatedCount += 1
+            case .preservedConflict:
+                summary.conflictCount += 1
+            case .unchanged:
+                break
+            }
+        }
+
+        try context.save()
+        changedItems.forEach(ClipboardSpotlightIndexer.shared.indexItem)
+        return summary
+    }
+
+    @MainActor
+    static func sync(
+        in context: NSManagedObjectContext,
+        provider: ClipboardLocalFolderSyncProvider
+    ) async throws -> ClipboardLocalFolderSyncSummary {
+        var summary = try await importItems(in: context, provider: provider)
+        let exportSummary = try await exportItems(in: context, provider: provider)
+        summary.exportedCount = exportSummary.exportedCount
+        return summary
+    }
+
+    @MainActor
+    private static func fetchClipboardItems(in context: NSManagedObjectContext) throws -> [ClipboardItem] {
+        let request = ClipboardItem.fetchRequest()
+        return try context.fetch(request)
+    }
+}
+
 enum ClipboardItemSyncState: Equatable {
     case localOnly
     case pending

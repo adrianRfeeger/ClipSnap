@@ -85,6 +85,12 @@ struct SettingsView: View {
     @AppStorage(ClipboardSettingKey.localFolderSyncPath)
     private var localFolderSyncPath = ""
 
+    @AppStorage(ClipboardSettingKey.localFolderAutomaticSyncEnabled)
+    private var localFolderAutomaticSyncEnabled = false
+
+    @AppStorage(ClipboardSettingKey.localFolderAutomaticSyncIntervalMinutes)
+    private var localFolderAutomaticSyncIntervalMinutes = 10
+
     @State private var isConfirmingClear = false
     @State private var pendingHealthCleanupAction: ClipboardHealthCleanupAction?
     @State private var selectedExcludedBundleIdentifiers: Set<String> = []
@@ -778,10 +784,27 @@ struct SettingsView: View {
                     .textSelection(.enabled)
             }
 
+            Toggle("Sync automatically", isOn: $localFolderAutomaticSyncEnabled)
+                .disabled(!canUseLocalFolderSync)
+
+            Stepper(
+                "Automatic sync: every \(localFolderAutomaticSyncIntervalMinutes) min.",
+                value: $localFolderAutomaticSyncIntervalMinutes,
+                in: 1...120
+            )
+            .disabled(!canUseAutomaticLocalFolderSync)
+
             HStack {
                 Button("Choose Folder…") {
                     chooseLocalSyncFolder()
                 }
+
+                Button("Sync Now") {
+                    Task {
+                        await syncLocalFolder()
+                    }
+                }
+                .disabled(!canUseLocalFolderSync)
 
                 Button("Export Now") {
                     Task {
@@ -889,6 +912,10 @@ struct SettingsView: View {
         localFolderSyncEnabled && !localFolderSyncPath.isEmpty
     }
 
+    private var canUseAutomaticLocalFolderSync: Bool {
+        canUseLocalFolderSync && localFolderAutomaticSyncEnabled
+    }
+
     private var localFolderSyncProvider: ClipboardLocalFolderSyncProvider? {
         guard canUseLocalFolderSync else {
             return nil
@@ -925,23 +952,36 @@ struct SettingsView: View {
         syncStatusMessage = "Local folder sync will use \(url.lastPathComponent)."
     }
 
+    private func syncLocalFolder() async {
+        guard let provider = localFolderSyncProvider else {
+            syncStatusMessage = "Choose a local sync folder first."
+            return
+        }
+
+        do {
+            let summary = try await ClipboardLocalFolderSyncService.sync(
+                in: viewContext,
+                provider: provider
+            )
+            syncStatusMessage = summary.syncMessage
+        } catch {
+            viewContext.rollback()
+            syncStatusMessage = "Local folder sync failed: \(error.localizedDescription)"
+        }
+    }
+
     private func exportToLocalSyncFolder() async {
         guard let provider = localFolderSyncProvider else {
             syncStatusMessage = "Choose a local sync folder first."
             return
         }
 
-        let exportableItems = clipboardItems.filter {
-            !$0.isLocalOnly && !$0.isSensitive
-        }
-
         do {
-            for item in exportableItems {
-                try await provider.upload(ClipboardSyncPackage(item: item))
-            }
-            syncStatusMessage = exportableItems.count == 1
-                ? "Exported 1 item to local folder."
-                : "Exported \(exportableItems.count) items to local folder."
+            let summary = try await ClipboardLocalFolderSyncService.exportItems(
+                in: viewContext,
+                provider: provider
+            )
+            syncStatusMessage = summary.exportMessage
         } catch {
             syncStatusMessage = "Local folder export failed: \(error.localizedDescription)"
         }
@@ -954,71 +994,11 @@ struct SettingsView: View {
         }
 
         do {
-            let deleteMarkers = try await provider.downloadDeleteMarkers(since: nil)
-            let packages = try await provider.downloadPackages(since: nil)
-            var existingItems = Dictionary(
-                uniqueKeysWithValues: clipboardItems.compactMap { item in
-                    item.id.map { ($0, item) }
-                }
+            let summary = try await ClipboardLocalFolderSyncService.importItems(
+                in: viewContext,
+                provider: provider
             )
-            var changedItems: [ClipboardItem] = []
-            var insertedCount = 0
-            var updatedCount = 0
-            var conflictCount = 0
-            var deletedCount = 0
-            var keptNewerLocalCount = 0
-
-            for marker in deleteMarkers {
-                let resolution = ClipboardSyncConflictResolver.resolveDeleteMarker(
-                    marker,
-                    existingItem: existingItems[marker.itemIdentifier]
-                )
-                switch resolution {
-                case .deleteLocal:
-                    if let item = existingItems[marker.itemIdentifier] {
-                        ClipboardSpotlightIndexer.shared.deleteIdentifiers(
-                            item.id.map { [$0.uuidString] } ?? []
-                        )
-                        viewContext.delete(item)
-                        existingItems.removeValue(forKey: marker.itemIdentifier)
-                        deletedCount += 1
-                    }
-                case .keepNewerLocal:
-                    keptNewerLocalCount += 1
-                case .missingLocal:
-                    break
-                }
-            }
-
-            for package in packages {
-                guard existingItems[package.itemIdentifier]?.isDeleted != true else {
-                    continue
-                }
-                let merge = ClipboardSyncConflictResolver.merge(
-                    package: package,
-                    existingItem: existingItems[package.itemIdentifier],
-                    in: viewContext
-                )
-                if let item = merge.item,
-                   merge.result != .unchanged {
-                    changedItems.append(item)
-                }
-
-                switch merge.result {
-                case .inserted:
-                    insertedCount += 1
-                case .updatedMetadata:
-                    updatedCount += 1
-                case .preservedConflict:
-                    conflictCount += 1
-                case .unchanged:
-                    break
-                }
-            }
-
-            try viewContext.save()
-            changedItems.forEach(ClipboardSpotlightIndexer.shared.indexItem)
-            syncStatusMessage = "Imported \(insertedCount), updated \(updatedCount), deleted \(deletedCount), preserved \(conflictCount) conflict\(conflictCount == 1 ? "" : "s"), kept \(keptNewerLocalCount) newer local."
+            syncStatusMessage = summary.importMessage
         } catch {
             viewContext.rollback()
             syncStatusMessage = "Local folder import failed: \(error.localizedDescription)"

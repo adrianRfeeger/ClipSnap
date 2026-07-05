@@ -8,6 +8,7 @@
 import SwiftUI
 import CoreData
 import AppKit
+import Combine
 
 @main
 struct ClipSnapApp: App {
@@ -19,6 +20,7 @@ struct ClipSnapApp: App {
     @StateObject private var clipboardMonitor: ClipboardMonitor
     @StateObject private var cloudSyncMonitor: CloudSyncMonitor
     @StateObject private var screenCaptureService: ScreenCaptureService
+    @StateObject private var localFolderAutomaticSyncController: LocalFolderAutomaticSyncController
 
     init() {
         let isUITesting = AppLaunchConfiguration.isUITesting
@@ -40,6 +42,11 @@ struct ClipSnapApp: App {
         _screenCaptureService = StateObject(
             wrappedValue: ScreenCaptureService(clipboardMonitor: clipboardMonitor)
         )
+        _localFolderAutomaticSyncController = StateObject(
+            wrappedValue: LocalFolderAutomaticSyncController(
+                context: persistenceController.container.viewContext
+            )
+        )
     }
 
     var body: some Scene {
@@ -51,13 +58,19 @@ struct ClipSnapApp: App {
             )
                 .environment(\.managedObjectContext, persistenceController.container.viewContext)
                 .background {
-                    DockMenuConfigurator(
-                        delegate: dockMenuDelegate,
-                        context: persistenceController.container.viewContext,
-                        clipboardMonitor: clipboardMonitor,
-                        cloudSyncMonitor: cloudSyncMonitor,
-                        screenCaptureService: screenCaptureService
-                    )
+                    ZStack {
+                        DockMenuConfigurator(
+                            delegate: dockMenuDelegate,
+                            context: persistenceController.container.viewContext,
+                            clipboardMonitor: clipboardMonitor,
+                            cloudSyncMonitor: cloudSyncMonitor,
+                            screenCaptureService: screenCaptureService
+                        )
+
+                        LocalFolderAutomaticSyncStarter(
+                            controller: localFolderAutomaticSyncController
+                        )
+                    }
                     .frame(width: 0, height: 0)
                 }
                 .onAppear {
@@ -199,6 +212,96 @@ struct ClipSnapApp: App {
     }
 }
 
+@MainActor
+private final class LocalFolderAutomaticSyncController: ObservableObject {
+    private let context: NSManagedObjectContext
+    private var task: Task<Void, Never>?
+    private var lastSyncDate: Date?
+
+    init(context: NSManagedObjectContext) {
+        self.context = context
+    }
+
+    func start() {
+        guard task == nil else {
+            return
+        }
+
+        task = Task { [weak self] in
+            await self?.run()
+        }
+    }
+
+    private func run() async {
+        while !Task.isCancelled {
+            await syncIfNeeded()
+
+            do {
+                try await Task.sleep(nanoseconds: 30 * 1_000_000_000)
+            } catch {
+                return
+            }
+        }
+    }
+
+    private func syncIfNeeded() async {
+        let defaults = UserDefaults.standard
+        guard defaults.bool(forKey: ClipboardSettingKey.localFolderSyncEnabled),
+              defaults.bool(forKey: ClipboardSettingKey.localFolderAutomaticSyncEnabled) else {
+            return
+        }
+
+        let folderPath = defaults.string(forKey: ClipboardSettingKey.localFolderSyncPath) ?? ""
+        guard !folderPath.isEmpty else {
+            return
+        }
+
+        let storedIntervalMinutes = defaults.integer(
+            forKey: ClipboardSettingKey.localFolderAutomaticSyncIntervalMinutes
+        )
+        let intervalMinutes = max(1, storedIntervalMinutes == 0 ? 10 : storedIntervalMinutes)
+        let interval = TimeInterval(intervalMinutes * 60)
+        let now = Date()
+        if let lastSyncDate,
+           now.timeIntervalSince(lastSyncDate) < interval {
+            return
+        }
+
+        lastSyncDate = now
+
+        let provider = ClipboardLocalFolderSyncProvider(
+            folderURL: URL(fileURLWithPath: folderPath, isDirectory: true),
+            descriptor: ClipboardSyncProviderDescriptor(
+                id: ClipboardSyncProviderKind.localFolder.rawValue,
+                kind: .localFolder,
+                displayName: "Local Folder",
+                capabilities: .localFolder,
+                isEnabled: true
+            )
+        )
+
+        do {
+            _ = try await ClipboardLocalFolderSyncService.sync(
+                in: context,
+                provider: provider
+            )
+        } catch {
+            context.rollback()
+        }
+    }
+}
+
+private struct LocalFolderAutomaticSyncStarter: View {
+    @ObservedObject var controller: LocalFolderAutomaticSyncController
+
+    var body: some View {
+        Color.clear
+            .onAppear {
+                controller.start()
+            }
+    }
+}
+
 private struct ClipSnapHelpCommands: Commands {
     @Environment(\.openWindow) private var openWindow
 
@@ -294,7 +397,7 @@ private struct ClipSnapHelpView: View {
                     systemImage: "folder",
                     rows: [
                         "The visible sync option is Local Folder Sync in Settings > Sync.",
-                        "Choose a folder and use Export Now or Import Now to move portable ClipSnap packages through Dropbox, Syncthing, OneDrive folder sync, NAS shares, external drives, or a manual backup folder.",
+                        "Choose a folder, enable Sync automatically for background updates, or use Sync Now, Export Now, and Import Now for explicit control.",
                         "Sensitive and local-only items are skipped by local folder sync."
                     ]
                 )
