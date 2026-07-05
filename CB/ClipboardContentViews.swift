@@ -40,7 +40,7 @@ struct ClipboardItemPreview: View {
         case ClipboardItemType.rtfd:
             richPreview(documentType: .rtfd, title: "RTFD")
         case ClipboardItemType.html:
-            richPreview(documentType: .html, title: "HTML")
+            htmlPreview
         case ClipboardItemType.pdf:
             if let rawData = item.rawData {
                 PDFClipboardPreview(data: rawData)
@@ -76,18 +76,7 @@ struct ClipboardItemPreview: View {
     private var imagePreview: some View {
         if let image = previewImage {
             VStack(spacing: 12) {
-                GeometryReader { proxy in
-                    Image(nsImage: image)
-                        .resizable()
-                        .scaledToFit()
-                        .frame(
-                            width: proxy.size.width,
-                            height: proxy.size.height,
-                            alignment: .center
-                        )
-                }
-                .frame(minHeight: 240)
-                .background(.quaternary.opacity(0.15), in: RoundedRectangle(cornerRadius: 6))
+                ResponsiveImageCanvas(image: image)
 
                 HStack {
                     Button("Edit Image") {
@@ -140,6 +129,202 @@ struct ClipboardItemPreview: View {
         } else {
             ContentUnavailableView("\(title) Unavailable", systemImage: "doc.richtext")
         }
+    }
+
+    @ViewBuilder
+    private var htmlPreview: some View {
+        if let htmlString {
+            HTMLFormattedClipboardPreview(
+                htmlString: htmlString,
+                plainText: item.plainText ?? item.previewText ?? ""
+            )
+        } else {
+            ContentUnavailableView("HTML Unavailable", systemImage: "chevron.left.forwardslash.chevron.right")
+        }
+    }
+
+    private var htmlString: String? {
+        guard let data = item.rawData else {
+            return nil
+        }
+
+        return String(data: data, encoding: .utf8)
+            ?? String(data: data, encoding: .utf16)
+            ?? String(data: data, encoding: .isoLatin1)
+    }
+}
+
+private struct ResponsiveImageCanvas: View {
+    let image: NSImage
+
+    var body: some View {
+        GeometryReader { proxy in
+            let canvasHeight = canvasHeight(for: proxy.size.width)
+
+            Image(nsImage: image)
+                .resizable()
+                .aspectRatio(imageAspectRatio, contentMode: .fit)
+                .frame(
+                    width: proxy.size.width,
+                    height: canvasHeight,
+                    alignment: .center
+                )
+                .background(.quaternary.opacity(0.15), in: RoundedRectangle(cornerRadius: 6))
+        }
+        .frame(minHeight: minimumHeight)
+        .frame(height: preferredHeight)
+    }
+
+    private var preferredHeight: CGFloat {
+        let screenWidth = NSScreen.main?.visibleFrame.width ?? 1_200
+        return canvasHeight(for: min(screenWidth * 0.58, 900))
+    }
+
+    private var imageAspectRatio: CGFloat {
+        let size = image.pixelSize
+        guard size.width > 0, size.height > 0 else {
+            return 1
+        }
+
+        return size.width / size.height
+    }
+
+    private var minimumHeight: CGFloat {
+        240
+    }
+
+    private var maximumHeight: CGFloat {
+        720
+    }
+
+    private func canvasHeight(for width: CGFloat) -> CGFloat {
+        guard width.isFinite, width > 0 else {
+            return minimumHeight
+        }
+
+        return min(max(width / imageAspectRatio, minimumHeight), maximumHeight)
+    }
+}
+
+private extension NSImage {
+    var pixelSize: CGSize {
+        if let representation = representations.max(by: {
+            ($0.pixelsWide * $0.pixelsHigh) < ($1.pixelsWide * $1.pixelsHigh)
+        }), representation.pixelsWide > 0, representation.pixelsHigh > 0 {
+            return CGSize(width: representation.pixelsWide, height: representation.pixelsHigh)
+        }
+
+        return size
+    }
+}
+
+private struct HTMLFormattedClipboardPreview: View {
+    enum Mode: String, CaseIterable, Identifiable {
+        case rendered
+        case text
+        case source
+
+        var id: String { rawValue }
+
+        var title: String {
+            switch self {
+            case .rendered:
+                return "Rendered"
+            case .text:
+                return "Text"
+            case .source:
+                return "Source"
+            }
+        }
+    }
+
+    let htmlString: String
+    let plainText: String
+
+    @State private var mode: Mode = .rendered
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Picker("HTML Preview Mode", selection: $mode) {
+                ForEach(Mode.allCases) { mode in
+                    Text(mode.title).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(width: 260)
+
+            Group {
+                switch mode {
+                case .rendered:
+                    VStack(spacing: 0) {
+                        HTMLClipboardPreview(htmlString: htmlString, fallbackText: displayText)
+                            .frame(maxWidth: .infinity, minHeight: 280)
+
+                        if !displayText.isEmpty {
+                            Divider()
+                            ScrollView {
+                                Text(displayText)
+                                    .textSelection(.enabled)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(10)
+                            }
+                            .frame(maxHeight: 160)
+                        }
+                    }
+                case .text:
+                    ScrollView {
+                        Text(displayText)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(10)
+                    }
+                case .source:
+                    ScrollView {
+                        Text(HTMLClipboardPreview.normalizedSource(from: htmlString))
+                            .font(.system(.body, design: .monospaced))
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(10)
+                    }
+                }
+            }
+            .background(.quaternary.opacity(0.25), in: RoundedRectangle(cornerRadius: 8))
+        }
+    }
+
+    private var displayText: String {
+        let trimmedText = plainText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedText.isEmpty {
+            return trimmedText
+        }
+
+        return HTMLTextExtractor.plainText(from: htmlString)
+    }
+}
+
+private enum HTMLTextExtractor {
+    static func plainText(from htmlString: String) -> String {
+        var text = htmlString
+        text = text.replacingOccurrences(
+            of: "(?is)<(script|style)\\b[^>]*>.*?</\\1>",
+            with: " ",
+            options: .regularExpression
+        )
+        text = text.replacingOccurrences(of: "(?i)<br\\s*/?>", with: "\n", options: .regularExpression)
+        text = text.replacingOccurrences(of: "(?i)</p\\s*>", with: "\n", options: .regularExpression)
+        text = text.replacingOccurrences(of: "(?i)</div\\s*>", with: "\n", options: .regularExpression)
+        text = text.replacingOccurrences(of: "<[^>]+>", with: " ", options: .regularExpression)
+        text = text.replacingOccurrences(of: "&nbsp;", with: " ")
+        text = text.replacingOccurrences(of: "&amp;", with: "&")
+        text = text.replacingOccurrences(of: "&lt;", with: "<")
+        text = text.replacingOccurrences(of: "&gt;", with: ">")
+        text = text.replacingOccurrences(of: "&quot;", with: "\"")
+        text = text.replacingOccurrences(of: "&#39;", with: "'")
+        return text
+            .components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
     }
 }
 

@@ -922,6 +922,18 @@ struct CBTests {
         #expect(formatted.firstIndex(of: "a")! < formatted.firstIndex(of: "b")!)
     }
 
+    @Test func htmlPreviewNormalizesEscapedAttributeFragments() {
+        let source = """
+        <meta charset='utf-8'><span style=&quot;color: rgb(240, 246, 252); background-color: rgb(13, 17, 23);&quot;>ClipSnap is a native macOS clipboard manager.</span>
+        """
+        let normalized = HTMLClipboardPreview.normalizedSource(from: source)
+
+        #expect(normalized.contains("<span"))
+        #expect(normalized.contains("style=\"color: rgb(240, 246, 252); background-color: rgb(13, 17, 23);\""))
+        #expect(!normalized.contains("&quot;"))
+        #expect(normalized.contains("ClipSnap is a native macOS clipboard manager."))
+    }
+
     @Test func textTransformationsAndMergingProduceReusableText() {
         let cleanedURL = ClipboardTextTransformation.removeTrackingParameters.apply(
             to: "https://example.com/article?utm_source=newsletter&id=42&fbclid=abc"
