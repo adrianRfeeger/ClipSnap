@@ -216,35 +216,55 @@ struct ClipboardSyncDeleteMarker: Codable, Equatable, Sendable {
 }
 
 enum ClipboardLocalFolderSyncProviderError: LocalizedError {
-    case unableToCreateFolder(URL)
-    case unableToReadFolder(URL)
+    case missingUserSelectedReadWriteEntitlement
+    case unableToCreateFolder(URL, String)
+    case unableToReadFolder(URL, String?)
+    case unableToCoordinate(URL, String)
 
     var errorDescription: String? {
         switch self {
-        case .unableToCreateFolder(let url):
-            return "ClipSnap could not create the sync folder at \(url.path)."
-        case .unableToReadFolder(let url):
+        case .missingUserSelectedReadWriteEntitlement:
+            return "This build only has read-only access to user-selected files. In Xcode, set Signing & Capabilities > App Sandbox > User Selected File to Read/Write, then rebuild ClipSnap."
+        case .unableToCreateFolder(let url, let reason):
+            return "ClipSnap could not create the sync folder at \(url.path): \(reason)"
+        case .unableToReadFolder(let url, let reason):
+            if let reason {
+                return "ClipSnap could not read the sync folder at \(url.path): \(reason)"
+            }
             return "ClipSnap could not read the sync folder at \(url.path)."
+        case .unableToCoordinate(let url, let reason):
+            return "ClipSnap could not access the sync folder at \(url.path): \(reason)"
         }
     }
 }
 
 struct ClipboardLocalFolderSyncProvider: ClipboardSyncProvider {
     let folderURL: URL
+    let securityScopedBookmarkData: Data?
     var descriptor: ClipboardSyncProviderDescriptor
 
     init(
         folderURL: URL,
+        securityScopedBookmarkData: Data? = nil,
         descriptor: ClipboardSyncProviderDescriptor = .localFolder
     ) {
-        self.folderURL = folderURL
+        self.securityScopedBookmarkData = securityScopedBookmarkData
+        self.folderURL = Self.resolvedFolderURL(
+            fallbackURL: folderURL,
+            bookmarkData: securityScopedBookmarkData
+        )
         self.descriptor = descriptor
     }
 
     func currentStatus() async -> ClipboardSyncProviderStatus {
         do {
-            try ensureFolderStructure()
-            let quotaUsedBytes = folderByteCount()
+            try Self.validateUserSelectedReadWriteEntitlement()
+            let quotaUsedBytes = try withSecurityScopedAccess {
+                try runDirectlyThenCoordinateWriting(folderURL) {
+                    try ensureFolderStructure()
+                    return folderByteCount()
+                }
+            }
             return ClipboardSyncProviderStatus(
                 descriptor: descriptor,
                 authenticationState: .notRequired,
@@ -266,19 +286,99 @@ struct ClipboardLocalFolderSyncProvider: ClipboardSyncProvider {
     }
 
     func upload(_ package: ClipboardSyncPackage) async throws {
-        try ensureFolderStructure()
-        let url = packageURL(for: package.itemIdentifier)
-        try package.encodedData().write(to: url, options: .atomic)
+        try Self.validateUserSelectedReadWriteEntitlement()
+        try withSecurityScopedAccess {
+            let url = packageURL(for: package.itemIdentifier)
+            try runDirectlyThenCoordinateWriting(folderURL) {
+                try ensureFolderStructure()
+                try writeData(package.encodedData(), to: url)
+            }
+        }
     }
 
     func downloadPackages(since date: Date?) async throws -> [ClipboardSyncPackage] {
-        try ensureFolderStructure()
+        try withSecurityScopedAccess {
+            try runDirectlyThenCoordinateReading(folderURL) {
+                try ensureFolderStructure()
+                return try readPackages(since: date)
+            }
+        }
+    }
+
+    func downloadDeleteMarkers(since date: Date?) async throws -> [ClipboardSyncDeleteMarker] {
+        try withSecurityScopedAccess {
+            try runDirectlyThenCoordinateReading(folderURL) {
+                try ensureFolderStructure()
+                return try readDeleteMarkers(since: date)
+            }
+        }
+    }
+
+    func deletePackage(itemIdentifier: UUID, updatedAt: Date) async throws {
+        try Self.validateUserSelectedReadWriteEntitlement()
+        try withSecurityScopedAccess {
+            try runDirectlyThenCoordinateWriting(folderURL) {
+                try ensureFolderStructure()
+                let packageURL = packageURL(for: itemIdentifier)
+                if FileManager.default.fileExists(atPath: packageURL.path) {
+                    try FileManager.default.removeItem(at: packageURL)
+                }
+
+                let marker = ClipboardSyncDeleteMarker(
+                    itemIdentifier: itemIdentifier,
+                    updatedAt: updatedAt
+                )
+                let encoder = JSONEncoder()
+                encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+                encoder.dateEncodingStrategy = .iso8601
+                let markerURL = deletedFolderURL
+                    .appendingPathComponent(itemIdentifier.uuidString)
+                    .appendingPathExtension(Self.deleteMarkerFileExtension)
+                try writeData(try encoder.encode(marker), to: markerURL)
+            }
+        }
+    }
+
+    static let packageFileExtension = "clipsnapitem"
+    static let deleteMarkerFileExtension = "clipsnapdelete"
+
+    static var canWriteUserSelectedFiles: Bool {
+        !boolEntitlement("com.apple.security.app-sandbox")
+            || boolEntitlement("com.apple.security.files.user-selected.read-write")
+    }
+
+    private static func validateUserSelectedReadWriteEntitlement() throws {
+        guard canWriteUserSelectedFiles else {
+            throw ClipboardLocalFolderSyncProviderError.missingUserSelectedReadWriteEntitlement
+        }
+    }
+
+    private static func resolvedFolderURL(fallbackURL: URL, bookmarkData: Data?) -> URL {
+        guard let bookmarkData,
+              !bookmarkData.isEmpty else {
+            return fallbackURL
+        }
+
+        var isStale = false
+        do {
+            return try URL(
+                resolvingBookmarkData: bookmarkData,
+                options: [.withSecurityScope],
+                relativeTo: nil,
+                bookmarkDataIsStale: &isStale
+            )
+        } catch {
+            return fallbackURL
+        }
+    }
+
+    private func readPackages(since date: Date?) throws -> [ClipboardSyncPackage] {
         guard let enumerator = FileManager.default.enumerator(
             at: itemsFolderURL,
             includingPropertiesForKeys: [.contentModificationDateKey],
             options: [.skipsHiddenFiles]
         ) else {
-            throw ClipboardLocalFolderSyncProviderError.unableToReadFolder(itemsFolderURL)
+            throw ClipboardLocalFolderSyncProviderError.unableToReadFolder(itemsFolderURL, nil)
         }
 
         var packages: [ClipboardSyncPackage] = []
@@ -301,14 +401,13 @@ struct ClipboardLocalFolderSyncProvider: ClipboardSyncProvider {
         return packages.sorted { $0.item.updatedAt < $1.item.updatedAt }
     }
 
-    func downloadDeleteMarkers(since date: Date?) async throws -> [ClipboardSyncDeleteMarker] {
-        try ensureFolderStructure()
+    private func readDeleteMarkers(since date: Date?) throws -> [ClipboardSyncDeleteMarker] {
         guard let enumerator = FileManager.default.enumerator(
             at: deletedFolderURL,
             includingPropertiesForKeys: [.contentModificationDateKey],
             options: [.skipsHiddenFiles]
         ) else {
-            throw ClipboardLocalFolderSyncProviderError.unableToReadFolder(deletedFolderURL)
+            throw ClipboardLocalFolderSyncProviderError.unableToReadFolder(deletedFolderURL, nil)
         }
 
         let decoder = JSONDecoder()
@@ -333,35 +432,16 @@ struct ClipboardLocalFolderSyncProvider: ClipboardSyncProvider {
         return markers.sorted { $0.updatedAt < $1.updatedAt }
     }
 
-    func deletePackage(itemIdentifier: UUID, updatedAt: Date) async throws {
-        try ensureFolderStructure()
-        let packageURL = packageURL(for: itemIdentifier)
-        if FileManager.default.fileExists(atPath: packageURL.path) {
-            try FileManager.default.removeItem(at: packageURL)
-        }
-
-        let marker = ClipboardSyncDeleteMarker(
-            itemIdentifier: itemIdentifier,
-            updatedAt: updatedAt
-        )
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        encoder.dateEncodingStrategy = .iso8601
-        let markerURL = deletedFolderURL
-            .appendingPathComponent(itemIdentifier.uuidString)
-            .appendingPathExtension(Self.deleteMarkerFileExtension)
-        try encoder.encode(marker).write(to: markerURL, options: .atomic)
-    }
-
-    static let packageFileExtension = "clipsnapitem"
-    static let deleteMarkerFileExtension = "clipsnapdelete"
-
     private var itemsFolderURL: URL {
-        folderURL.appendingPathComponent("items", isDirectory: true)
+        usesFlatFolderLayout
+            ? folderURL
+            : folderURL.appendingPathComponent("items", isDirectory: true)
     }
 
     private var deletedFolderURL: URL {
-        folderURL.appendingPathComponent("deleted", isDirectory: true)
+        usesFlatFolderLayout
+            ? folderURL
+            : folderURL.appendingPathComponent("deleted", isDirectory: true)
     }
 
     private func packageURL(for itemIdentifier: UUID) -> URL {
@@ -370,8 +450,153 @@ struct ClipboardLocalFolderSyncProvider: ClipboardSyncProvider {
             .appendingPathExtension(Self.packageFileExtension)
     }
 
+    private func withSecurityScopedAccess<T>(_ operation: () throws -> T) throws -> T {
+        let didStartAccessing = securityScopedBookmarkData != nil
+            && folderURL.startAccessingSecurityScopedResource()
+        defer {
+            if didStartAccessing {
+                folderURL.stopAccessingSecurityScopedResource()
+            }
+        }
+
+        return try operation()
+    }
+
+    private func runDirectlyThenCoordinateReading<T>(_ url: URL, operation: () throws -> T) throws -> T {
+        do {
+            return try operation()
+        } catch let directError {
+            do {
+                return try coordinateReading(url) {
+                    do {
+                        return try operation()
+                    } catch let coordinatedError {
+                        throw combinedAccessError(
+                            url: url,
+                            directError: directError,
+                            coordinatedError: coordinatedError
+                        )
+                    }
+                }
+            } catch let coordinatedError {
+                throw combinedAccessError(
+                    url: url,
+                    directError: directError,
+                    coordinatedError: coordinatedError
+                )
+            }
+        }
+    }
+
+    private func runDirectlyThenCoordinateWriting<T>(_ url: URL, operation: () throws -> T) throws -> T {
+        do {
+            return try operation()
+        } catch let directError {
+            do {
+                return try coordinateWriting(url) {
+                    do {
+                        return try operation()
+                    } catch let coordinatedError {
+                        throw combinedAccessError(
+                            url: url,
+                            directError: directError,
+                            coordinatedError: coordinatedError
+                        )
+                    }
+                }
+            } catch let coordinatedError {
+                throw combinedAccessError(
+                    url: url,
+                    directError: directError,
+                    coordinatedError: coordinatedError
+                )
+            }
+        }
+    }
+
+    private func coordinateReading<T>(_ url: URL, operation: () throws -> T) throws -> T {
+        let coordinator = NSFileCoordinator(filePresenter: nil)
+        var coordinationError: NSError?
+        var operationResult: Result<T, Error>?
+
+        coordinator.coordinate(readingItemAt: url, options: [], error: &coordinationError) { _ in
+            operationResult = Result {
+                try operation()
+            }
+        }
+
+        if let operationResult {
+            return try operationResult.get()
+        }
+
+        throw ClipboardLocalFolderSyncProviderError.unableToCoordinate(
+            url,
+            coordinationError?.localizedDescription ?? "The folder could not be coordinated for reading."
+        )
+    }
+
+    private func coordinateWriting<T>(_ url: URL, operation: () throws -> T) throws -> T {
+        let coordinator = NSFileCoordinator(filePresenter: nil)
+        var coordinationError: NSError?
+        var operationResult: Result<T, Error>?
+
+        coordinator.coordinate(writingItemAt: url, options: .forMerging, error: &coordinationError) { _ in
+            operationResult = Result {
+                try operation()
+            }
+        }
+
+        if let operationResult {
+            return try operationResult.get()
+        }
+
+        throw ClipboardLocalFolderSyncProviderError.unableToCoordinate(
+            url,
+            coordinationError?.localizedDescription ?? "The folder could not be coordinated for writing."
+        )
+    }
+
+    private func combinedAccessError(
+        url: URL,
+        directError: Error,
+        coordinatedError: Error
+    ) -> ClipboardLocalFolderSyncProviderError {
+        let providerHint = isFileProviderBacked
+            ? " This folder is inside CloudStorage; use Grant Access in ClipSnap, and make sure the folder is available offline in Finder. If OneDrive still denies writes, choose a normal local folder and let OneDrive sync that folder after ClipSnap writes to it."
+            : ""
+        return ClipboardLocalFolderSyncProviderError.unableToCoordinate(
+            url,
+            "Direct access failed with \(directError.localizedDescription). Coordinated access failed with \(coordinatedError.localizedDescription).\(providerHint)"
+        )
+    }
+
+    private var isFileProviderBacked: Bool {
+        folderURL.path.contains("/Library/CloudStorage/")
+    }
+
+    private var usesFlatFolderLayout: Bool {
+        isFileProviderBacked
+    }
+
+    private static func boolEntitlement(_ key: String) -> Bool {
+        guard let task = SecTaskCreateFromSelf(nil),
+              let value = SecTaskCopyValueForEntitlement(task, key as CFString, nil) else {
+            return false
+        }
+
+        return (value as? Bool) == true
+    }
+
     private func ensureFolderStructure() throws {
         do {
+            if usesFlatFolderLayout {
+                try FileManager.default.createDirectory(
+                    at: folderURL,
+                    withIntermediateDirectories: true
+                )
+                return
+            }
+
             try FileManager.default.createDirectory(
                 at: itemsFolderURL,
                 withIntermediateDirectories: true
@@ -381,7 +606,18 @@ struct ClipboardLocalFolderSyncProvider: ClipboardSyncProvider {
                 withIntermediateDirectories: true
             )
         } catch {
-            throw ClipboardLocalFolderSyncProviderError.unableToCreateFolder(folderURL)
+            throw ClipboardLocalFolderSyncProviderError.unableToCreateFolder(
+                folderURL,
+                error.localizedDescription
+            )
+        }
+    }
+
+    private func writeData(_ data: Data, to url: URL) throws {
+        do {
+            try data.write(to: url, options: .atomic)
+        } catch {
+            try data.write(to: url)
         }
     }
 

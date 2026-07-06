@@ -85,6 +85,9 @@ struct SettingsView: View {
     @AppStorage(ClipboardSettingKey.localFolderSyncPath)
     private var localFolderSyncPath = ""
 
+    @AppStorage(ClipboardSettingKey.localFolderSyncBookmarkData)
+    private var localFolderSyncBookmarkData = Data()
+
     @AppStorage(ClipboardSettingKey.localFolderAutomaticSyncEnabled)
     private var localFolderAutomaticSyncEnabled = false
 
@@ -99,6 +102,7 @@ struct SettingsView: View {
     @State private var applicationRuleSearchText = ""
     @State private var isShowingSetup = false
     @State private var syncStatusMessage: String?
+    @State private var isLocalFolderSyncRunning = false
 
     @AppStorage(ScreenCaptureSettingKey.showsCursor)
     private var screenCaptureShowsCursor = false
@@ -777,6 +781,15 @@ struct SettingsView: View {
         Section {
             Toggle("Enable local folder sync", isOn: $localFolderSyncEnabled)
 
+            if !ClipboardLocalFolderSyncProvider.canWriteUserSelectedFiles {
+                Label(
+                    "This build has read-only selected-file access. Set Signing & Capabilities > App Sandbox > User Selected File to Read/Write, then rebuild ClipSnap.",
+                    systemImage: "exclamationmark.triangle"
+                )
+                .font(.caption)
+                .foregroundStyle(.orange)
+            }
+
             LabeledContent("Folder") {
                 Text(localFolderSyncPath.isEmpty ? "Not selected" : localFolderSyncPath)
                     .lineLimit(1)
@@ -799,30 +812,35 @@ struct SettingsView: View {
                     chooseLocalSyncFolder()
                 }
 
+                Button("Grant Access…") {
+                    grantLocalSyncFolderAccess()
+                }
+                .disabled(localFolderSyncPath.isEmpty || isLocalFolderSyncRunning)
+
                 Button("Sync Now") {
                     Task {
                         await syncLocalFolder()
                     }
                 }
-                .disabled(!canUseLocalFolderSync)
+                .disabled(!canUseLocalFolderSync || isLocalFolderSyncRunning)
 
                 Button("Export Now") {
                     Task {
                         await exportToLocalSyncFolder()
                     }
                 }
-                .disabled(!canUseLocalFolderSync)
+                .disabled(!canUseLocalFolderSync || isLocalFolderSyncRunning)
 
                 Button("Import Now") {
                     Task {
                         await importFromLocalSyncFolder()
                     }
                 }
-                .disabled(!canUseLocalFolderSync)
+                .disabled(!canUseLocalFolderSync || isLocalFolderSyncRunning)
             }
 
             if let syncStatusMessage {
-                Text(syncStatusMessage)
+                Label(syncStatusMessage, systemImage: isLocalFolderSyncRunning ? "arrow.triangle.2.circlepath" : "info.circle")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -923,6 +941,9 @@ struct SettingsView: View {
 
         return ClipboardLocalFolderSyncProvider(
             folderURL: URL(fileURLWithPath: localFolderSyncPath, isDirectory: true),
+            securityScopedBookmarkData: localFolderSyncBookmarkData.isEmpty
+                ? nil
+                : localFolderSyncBookmarkData,
             descriptor: ClipboardSyncProviderDescriptor(
                 id: ClipboardSyncProviderKind.localFolder.rawValue,
                 kind: .localFolder,
@@ -937,6 +958,7 @@ struct SettingsView: View {
         let panel = NSOpenPanel()
         panel.title = "Choose ClipSnap Sync Folder"
         panel.prompt = "Choose"
+        panel.message = "Choose the folder where ClipSnap should write portable sync packages."
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
         panel.canCreateDirectories = true
@@ -947,15 +969,74 @@ struct SettingsView: View {
             return
         }
 
+        storeLocalSyncFolder(url, successMessage: "Local folder sync will use \(url.lastPathComponent).")
+    }
+
+    private func grantLocalSyncFolderAccess() {
+        let currentURL = URL(fileURLWithPath: localFolderSyncPath, isDirectory: true)
+        let panel = NSOpenPanel()
+        panel.title = "Grant ClipSnap Folder Access"
+        panel.prompt = "Grant Access"
+        panel.message = "Select the current sync folder again so macOS can grant ClipSnap write permission."
+        panel.directoryURL = currentURL
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+
+        guard panel.runModal() == .OK,
+              let url = panel.url else {
+            return
+        }
+
+        storeLocalSyncFolder(url, successMessage: "Folder access refreshed for \(url.lastPathComponent).")
+    }
+
+    private func storeLocalSyncFolder(_ url: URL, successMessage: String) {
         localFolderSyncPath = url.path
+        do {
+            localFolderSyncBookmarkData = try url.bookmarkData(
+                options: [.withSecurityScope],
+                includingResourceValuesForKeys: nil,
+                relativeTo: nil
+            )
+        } catch {
+            localFolderSyncBookmarkData = Data()
+            syncStatusMessage = "Folder selected, but persistent access could not be saved: \(error.localizedDescription)"
+            return
+        }
         localFolderSyncEnabled = true
-        syncStatusMessage = "Local folder sync will use \(url.lastPathComponent)."
+        syncStatusMessage = successMessage
+
+        Task {
+            await validateLocalSyncFolder()
+        }
+    }
+
+    private func validateLocalSyncFolder() async {
+        guard let provider = localFolderSyncProvider else {
+            return
+        }
+
+        let status = await provider.currentStatus()
+        switch status.authenticationState {
+        case .error(let message):
+            syncStatusMessage = "Local folder access failed: \(message)"
+        default:
+            syncStatusMessage = "Local folder sync is ready."
+        }
     }
 
     private func syncLocalFolder() async {
         guard let provider = localFolderSyncProvider else {
             syncStatusMessage = "Choose a local sync folder first."
             return
+        }
+
+        isLocalFolderSyncRunning = true
+        syncStatusMessage = "Syncing local folder..."
+        defer {
+            isLocalFolderSyncRunning = false
         }
 
         do {
@@ -976,6 +1057,12 @@ struct SettingsView: View {
             return
         }
 
+        isLocalFolderSyncRunning = true
+        syncStatusMessage = "Exporting to local folder..."
+        defer {
+            isLocalFolderSyncRunning = false
+        }
+
         do {
             let summary = try await ClipboardLocalFolderSyncService.exportItems(
                 in: viewContext,
@@ -991,6 +1078,12 @@ struct SettingsView: View {
         guard let provider = localFolderSyncProvider else {
             syncStatusMessage = "Choose a local sync folder first."
             return
+        }
+
+        isLocalFolderSyncRunning = true
+        syncStatusMessage = "Importing from local folder..."
+        defer {
+            isLocalFolderSyncRunning = false
         }
 
         do {

@@ -271,6 +271,9 @@ private final class LocalFolderAutomaticSyncController: ObservableObject {
 
         let provider = ClipboardLocalFolderSyncProvider(
             folderURL: URL(fileURLWithPath: folderPath, isDirectory: true),
+            securityScopedBookmarkData: defaults.data(
+                forKey: ClipboardSettingKey.localFolderSyncBookmarkData
+            ),
             descriptor: ClipboardSyncProviderDescriptor(
                 id: ClipboardSyncProviderKind.localFolder.rawValue,
                 kind: .localFolder,

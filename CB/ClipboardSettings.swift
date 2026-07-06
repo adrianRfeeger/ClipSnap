@@ -105,6 +105,7 @@ enum ClipboardSettingKey {
     static let hasCompletedSetup = "hasCompletedSetup"
     static let localFolderSyncEnabled = "localFolderSyncEnabled"
     static let localFolderSyncPath = "localFolderSyncPath"
+    static let localFolderSyncBookmarkData = "localFolderSyncBookmarkData"
     static let localFolderAutomaticSyncEnabled = "localFolderAutomaticSyncEnabled"
     static let localFolderAutomaticSyncIntervalMinutes = "localFolderAutomaticSyncIntervalMinutes"
     static let appleIntelligenceSuggestionsEnabled = "appleIntelligenceSuggestionsEnabled"
