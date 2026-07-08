@@ -124,11 +124,136 @@ struct ClipboardItemPreview: View {
         documentType: NSAttributedString.DocumentType,
         title: String
     ) -> some View {
-        if let rawData = item.rawData {
-            RichClipboardPreview(data: rawData, documentType: documentType)
+        if let payload = richTextPayload(for: documentType) {
+            RichClipboardPreview(
+                data: payload.data,
+                documentType: documentType,
+                fallbackText: richTextFallbackText
+            )
+            .frame(minHeight: 180)
+            .frame(height: richTextPreviewHeight(for: payload.text))
+            .background(.quaternary.opacity(0.12), in: RoundedRectangle(cornerRadius: 6))
+        } else if !richTextFallbackText.isEmpty {
+            ScrollView {
+                Text(richTextFallbackText)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(12)
+            }
+            .frame(minHeight: 180)
+            .frame(height: richTextPreviewHeight(for: richTextFallbackText))
+            .background(.quaternary.opacity(0.12), in: RoundedRectangle(cornerRadius: 6))
         } else {
             ContentUnavailableView("\(title) Unavailable", systemImage: "doc.richtext")
         }
+    }
+
+    private var richTextFallbackText: String {
+        let directText = [
+            item.plainText,
+            item.previewText
+        ]
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first { !$0.isEmpty && $0 != "Rich text" && $0 != "RTFD" }
+
+        if let directText {
+            return directText
+        }
+
+        return item.sortedRepresentations
+            .compactMap(representationText)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first { !$0.isEmpty } ?? ""
+    }
+
+    private func richTextPreviewHeight(for text: String) -> CGFloat {
+        let lineCount = max(1, text.components(separatedBy: .newlines).count)
+        return min(max(CGFloat(lineCount) * 24 + 56, 180), 420)
+    }
+
+    private func richTextPayload(for documentType: NSAttributedString.DocumentType) -> RichTextPayload? {
+        let preferredTypeIdentifiers: [String]
+        switch documentType {
+        case .rtf:
+            preferredTypeIdentifiers = [
+                UTType.rtf.identifier,
+                "public.rtf"
+            ]
+        case .rtfd:
+            preferredTypeIdentifiers = [
+                UTType.rtfd.identifier,
+                UTType.flatRTFD.identifier,
+                "com.apple.flat-rtfd",
+                "com.apple.rtfd"
+            ]
+        default:
+            preferredTypeIdentifiers = []
+        }
+
+        let representationData = item.sortedRepresentations
+            .filter { representation in
+                guard let identifier = representation.utiIdentifier else {
+                    return false
+                }
+
+                return preferredTypeIdentifiers.contains(identifier)
+            }
+            .compactMap(\.data)
+
+        if let rawData = item.rawData,
+           let payload = decodedRichTextPayload(rawData, as: documentType) {
+            return payload
+        }
+
+        return representationData
+            .compactMap { decodedRichTextPayload($0, as: documentType) }
+            .max { $0.text.count < $1.text.count }
+    }
+
+    private func decodedRichTextPayload(
+        _ data: Data,
+        as documentType: NSAttributedString.DocumentType
+    ) -> RichTextPayload? {
+        guard let attributedString = try? NSAttributedString(
+            data: data,
+            options: [.documentType: documentType],
+            documentAttributes: nil
+        ) else {
+            return nil
+        }
+
+        let text = attributedString.string.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else {
+            return nil
+        }
+
+        return RichTextPayload(data: data, text: text)
+    }
+
+    private func representationText(_ representation: ClipboardRepresentation) -> String? {
+        if let stringValue = representation.stringValue {
+            return stringValue
+        }
+
+        guard let data = representation.data,
+              let identifier = representation.utiIdentifier else {
+            return nil
+        }
+
+        let textIdentifiers = Set([
+            NSPasteboard.PasteboardType.string.rawValue,
+            UTType.plainText.identifier,
+            UTType.utf8PlainText.identifier,
+            "public.utf16-external-plain-text"
+        ])
+
+        guard textIdentifiers.contains(identifier) else {
+            return nil
+        }
+
+        return String(data: data, encoding: .utf8)
+            ?? String(data: data, encoding: .utf16)
+            ?? String(data: data, encoding: .ascii)
     }
 
     @ViewBuilder
@@ -152,6 +277,11 @@ struct ClipboardItemPreview: View {
             ?? String(data: data, encoding: .utf16)
             ?? String(data: data, encoding: .isoLatin1)
     }
+}
+
+private struct RichTextPayload {
+    let data: Data
+    let text: String
 }
 
 private struct ResponsiveImageCanvas: View {

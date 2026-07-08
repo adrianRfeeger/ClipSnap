@@ -24,6 +24,7 @@ struct PDFClipboardPreview: NSViewRepresentable {
 struct RichClipboardPreview: NSViewRepresentable {
     let data: Data
     let documentType: NSAttributedString.DocumentType
+    let fallbackText: String
 
     func makeNSView(context: Context) -> NSScrollView {
         let scrollView = NSScrollView()
@@ -34,8 +35,14 @@ struct RichClipboardPreview: NSViewRepresentable {
         textView.isEditable = false
         textView.isSelectable = true
         textView.drawsBackground = false
+        textView.textColor = .labelColor
         textView.textContainerInset = NSSize(width: 8, height: 8)
         textView.autoresizingMask = [.width]
+        textView.textContainer?.widthTracksTextView = true
+        textView.textContainer?.containerSize = NSSize(
+            width: scrollView.contentSize.width,
+            height: .greatestFiniteMagnitude
+        )
         scrollView.documentView = textView
         return scrollView
     }
@@ -45,14 +52,30 @@ struct RichClipboardPreview: NSViewRepresentable {
             return
         }
 
-        let attributedString = try? NSAttributedString(
+        let decodedString = try? NSAttributedString(
             data: data,
             options: [.documentType: documentType],
             documentAttributes: nil
         )
+        let attributedString = decodedString.flatMap { readableAttributedString($0) }
         textView.textStorage?.setAttributedString(
-            attributedString ?? NSAttributedString(string: "Preview unavailable")
+            attributedString ?? NSAttributedString(
+                string: fallbackText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    ? "Preview unavailable"
+                    : fallbackText
+            )
         )
+    }
+
+    private func readableAttributedString(_ attributedString: NSAttributedString) -> NSAttributedString? {
+        guard !attributedString.string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return nil
+        }
+
+        let mutableString = NSMutableAttributedString(attributedString: attributedString)
+        let fullRange = NSRange(location: 0, length: mutableString.length)
+        mutableString.addAttribute(.foregroundColor, value: NSColor.labelColor, range: fullRange)
+        return mutableString
     }
 }
 

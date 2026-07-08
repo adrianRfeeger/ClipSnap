@@ -570,10 +570,12 @@ final class ClipboardMonitor: ObservableObject {
         }
 
         if let rtfData = pasteboard.data(forType: .rtf) {
+            let richText = richTextString(from: rtfData)
             return ClipboardItem.make(
                 in: context,
                 type: ClipboardItemType.rtf,
-                previewText: richTextPreview(from: rtfData) ?? "Rich text",
+                plainText: richText,
+                previewText: richText?.clipboardPreview ?? "Rich text",
                 rawData: rtfData,
                 utiType: NSPasteboard.PasteboardType.rtf.rawValue
             )
@@ -983,6 +985,10 @@ final class ClipboardMonitor: ObservableObject {
     }
 
     private func richTextPreview(from data: Data) -> String? {
+        richTextString(from: data)?.clipboardPreview
+    }
+
+    private func richTextString(from data: Data) -> String? {
         guard let attributedString = try? NSAttributedString(
             data: data,
             options: [.documentType: NSAttributedString.DocumentType.rtf],
@@ -991,7 +997,8 @@ final class ClipboardMonitor: ObservableObject {
             return nil
         }
 
-        return attributedString.string.clipboardPreview
+        let text = attributedString.string.trimmingCharacters(in: .whitespacesAndNewlines)
+        return text.isEmpty ? nil : text
     }
 
     private func htmlClipboardContent(from data: Data) -> HTMLClipboardContent {
