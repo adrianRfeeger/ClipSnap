@@ -6,6 +6,7 @@
 //
 
 import CoreData
+import OSLog
 
 struct PersistenceController {
     static let shared = PersistenceController()
@@ -75,23 +76,60 @@ struct PersistenceController {
         container.persistentStoreDescriptions.first?.setOption(true as NSNumber, forKey: NSMigratePersistentStoresAutomaticallyOption)
         container.persistentStoreDescriptions.first?.setOption(true as NSNumber, forKey: NSInferMappingModelAutomaticallyOption)
 
-        container.loadPersistentStores(completionHandler: { (storeDescription, error) in
-            if let error = error as NSError? {
-                // Replace this implementation with code to handle the error appropriately.
-                // fatalError() causes the application to generate a crash log and terminate. You should not use this function in a shipping application, although it may be useful during development.
-
-                /*
-                 Typical reasons for an error here include:
-                 * The parent directory does not exist, cannot be created, or disallows writing.
-                 * The persistent store is not accessible, due to permissions or data protection when the device is locked.
-                 * The device is out of space.
-                 * The store could not be migrated to the current model version.
-                 Check the error message to determine what the actual problem was.
-                 */
-                fatalError("Unresolved error \(error), \(error.userInfo)")
+        let loadState = PersistentStoreLoadState(
+            expectedCompletionCount: container.persistentStoreDescriptions.count
+        )
+        let persistentContainer = container
+        persistentContainer.loadPersistentStores { _, error in
+            if let error {
+                Self.logger.fault(
+                    "Persistent store failed to load: \(error.localizedDescription, privacy: .public)"
+                )
             }
-        })
+
+            guard loadState.recordCompletion(),
+                  persistentContainer.persistentStoreCoordinator.persistentStores.isEmpty else {
+                return
+            }
+
+            do {
+                _ = try persistentContainer.persistentStoreCoordinator.addPersistentStore(
+                    type: .inMemory,
+                    configuration: nil,
+                    at: URL(fileURLWithPath: "/dev/null")
+                )
+                Self.logger.fault(
+                    "ClipSnap is using temporary in-memory storage because no persistent store could be loaded"
+                )
+            } catch {
+                Self.logger.fault(
+                    "Temporary persistence recovery failed: \(error.localizedDescription, privacy: .public)"
+                )
+            }
+        }
         container.viewContext.automaticallyMergesChangesFromParent = true
         container.viewContext.mergePolicy = NSMergeByPropertyObjectTrumpMergePolicy
+    }
+
+    private static let logger = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "CB",
+        category: "Persistence"
+    )
+}
+
+private final class PersistentStoreLoadState: @unchecked Sendable {
+    private let lock = NSLock()
+    private let expectedCompletionCount: Int
+    private var completionCount = 0
+
+    init(expectedCompletionCount: Int) {
+        self.expectedCompletionCount = expectedCompletionCount
+    }
+
+    func recordCompletion() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        completionCount += 1
+        return completionCount == expectedCompletionCount
     }
 }

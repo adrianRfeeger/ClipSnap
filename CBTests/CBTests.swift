@@ -107,7 +107,88 @@ struct CBTests {
         )
 
         #expect(ClipboardContentHasher.hash(forward) != ClipboardContentHasher.hash(reversed))
-        #expect(forward.byteCount == 11)
+        #expect(forward.byteCount == 16)
+    }
+
+    @Test func ignoredPasteboardTypesAreExcludedFromStoredRepresentations() {
+        var settings = ClipboardSettings.defaults
+        settings.ignoredPasteboardTypes = [
+            "org.chromium.internal.*",
+            "com.example.private"
+        ]
+
+        #expect(
+            !ClipboardRepresentationCapturePolicy.shouldCapture(
+                "org.chromium.internal.source",
+                settings: settings
+            )
+        )
+        #expect(
+            !ClipboardRepresentationCapturePolicy.shouldCapture(
+                "com.example.private",
+                settings: settings
+            )
+        )
+        #expect(
+            ClipboardRepresentationCapturePolicy.shouldCapture(
+                "public.utf8-plain-text",
+                settings: settings
+            )
+        )
+        #expect(
+            !ClipboardRepresentationCapturePolicy.shouldCapture(
+                "org.nspasteboard.ConcealedType",
+                settings: settings
+            )
+        )
+    }
+
+    @MainActor
+    @Test func deletionFinalizationRemovesMetadataAndQueuesLocalFolderTombstone() throws {
+        let suiteName = "CBTests.Deletion.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+        }
+        defaults.set(
+            FileManager.default.temporaryDirectory.path,
+            forKey: ClipboardSettingKey.localFolderSyncPath
+        )
+
+        let persistence = PersistenceController(inMemory: true)
+        let item = ClipboardItem.make(
+            in: persistence.container.viewContext,
+            type: ClipboardItemType.text,
+            plainText: "Delete me",
+            previewText: "Delete me",
+            utiType: "public.utf8-plain-text"
+        )
+        let identifier = try #require(item.id)
+        ClipboardGeneratedMetadataStore.save(
+            ClipboardGeneratedMetadata(
+                suggestedTitle: "Stored metadata",
+                status: .suggested
+            ),
+            for: identifier,
+            defaults: defaults
+        )
+
+        let snapshot = ClipboardDeletionCoordinator.snapshot([item])
+        ClipboardDeletionCoordinator.finalize(
+            snapshot,
+            defaults: defaults
+        )
+
+        #expect(
+            ClipboardGeneratedMetadataStore.metadata(
+                for: identifier,
+                defaults: defaults
+            ) == nil
+        )
+        #expect(
+            ClipboardLocalFolderDeletionQueue.records(defaults: defaults)
+                .map(\.itemIdentifier) == [identifier]
+        )
     }
 
     @MainActor
@@ -352,6 +433,66 @@ struct CBTests {
     }
 
     @MainActor
+    @Test func pendingLocalDeletionRemovesRemotePackageBeforeImport() async throws {
+        let suiteName = "CBTests.SyncDeletion.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        let folderURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ClipSnap Sync Deletion \(UUID().uuidString)", isDirectory: true)
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+            try? FileManager.default.removeItem(at: folderURL)
+        }
+        defaults.set(
+            folderURL.path,
+            forKey: ClipboardSettingKey.localFolderSyncPath
+        )
+
+        let sourcePersistence = PersistenceController(inMemory: true)
+        let sourceItem = ClipboardItem.make(
+            in: sourcePersistence.container.viewContext,
+            type: ClipboardItemType.text,
+            plainText: "Remote item",
+            previewText: "Remote item",
+            rawData: Data("Remote item".utf8),
+            utiType: "public.utf8-plain-text"
+        )
+        let package = ClipboardSyncPackage(item: sourceItem)
+        let provider = ClipboardLocalFolderSyncProvider(
+            folderURL: folderURL,
+            descriptor: ClipboardSyncProviderDescriptor(
+                id: ClipboardSyncProviderKind.localFolder.rawValue,
+                kind: .localFolder,
+                displayName: "Local Test",
+                capabilities: .localFolder,
+                isEnabled: true
+            )
+        )
+        try await provider.upload(package)
+        ClipboardLocalFolderDeletionQueue.enqueue(
+            [package.itemIdentifier],
+            defaults: defaults
+        )
+
+        let destinationPersistence = PersistenceController(inMemory: true)
+        _ = try await ClipboardLocalFolderSyncService.importItems(
+            in: destinationPersistence.container.viewContext,
+            provider: provider,
+            defaults: defaults
+        )
+
+        let request = ClipboardItem.fetchRequest()
+        #expect(try destinationPersistence.container.viewContext.count(for: request) == 0)
+        #expect(
+            ClipboardLocalFolderDeletionQueue.records(defaults: defaults).isEmpty
+        )
+        #expect(try await provider.downloadPackages(since: nil).isEmpty)
+        #expect(
+            try await provider.downloadDeleteMarkers(since: nil)
+                .map(\.itemIdentifier) == [package.itemIdentifier]
+        )
+    }
+
+    @MainActor
     @Test func syncDeleteMarkerRemovesOlderLocalItem() throws {
         let persistence = PersistenceController(inMemory: true)
         let context = persistence.container.viewContext
@@ -373,6 +514,60 @@ struct CBTests {
         #expect(
             ClipboardSyncConflictResolver.resolveDeleteMarker(marker, existingItem: item)
                 == .deleteLocal
+        )
+    }
+
+    @MainActor
+    @Test func newerDeleteMarkerPreventsStalePackageResurrection() async throws {
+        let suiteName = "CBTests.StalePackage.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        let folderURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ClipSnap Stale Package \(UUID().uuidString)", isDirectory: true)
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+            try? FileManager.default.removeItem(at: folderURL)
+        }
+
+        let sourcePersistence = PersistenceController(inMemory: true)
+        let sourceItem = ClipboardItem.make(
+            in: sourcePersistence.container.viewContext,
+            type: ClipboardItemType.text,
+            plainText: "Stale remote item",
+            previewText: "Stale remote item",
+            rawData: Data("Stale remote item".utf8),
+            utiType: "public.utf8-plain-text"
+        )
+        sourceItem.updatedAt = Date(timeIntervalSince1970: 10)
+        let package = ClipboardSyncPackage(item: sourceItem)
+        let provider = ClipboardLocalFolderSyncProvider(
+            folderURL: folderURL,
+            descriptor: ClipboardSyncProviderDescriptor(
+                id: ClipboardSyncProviderKind.localFolder.rawValue,
+                kind: .localFolder,
+                displayName: "Local Test",
+                capabilities: .localFolder,
+                isEnabled: true
+            )
+        )
+
+        try await provider.upload(package)
+        try await provider.deletePackage(
+            itemIdentifier: package.itemIdentifier,
+            updatedAt: Date(timeIntervalSince1970: 20)
+        )
+        try await provider.upload(package)
+
+        let destinationPersistence = PersistenceController(inMemory: true)
+        _ = try await ClipboardLocalFolderSyncService.importItems(
+            in: destinationPersistence.container.viewContext,
+            provider: provider,
+            defaults: defaults
+        )
+
+        #expect(
+            try destinationPersistence.container.viewContext.count(
+                for: ClipboardItem.fetchRequest()
+            ) == 0
         )
     }
 

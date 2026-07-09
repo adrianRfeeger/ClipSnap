@@ -120,8 +120,24 @@ enum ClipboardGeneratedMetadataStore {
         for itemIdentifier: UUID,
         defaults: UserDefaults = .standard
     ) {
+        remove(
+            for: [itemIdentifier],
+            defaults: defaults
+        )
+    }
+
+    static func remove(
+        for itemIdentifiers: [UUID],
+        defaults: UserDefaults = .standard
+    ) {
+        guard !itemIdentifiers.isEmpty else {
+            return
+        }
+
         var values = allMetadata(defaults: defaults)
-        values.removeValue(forKey: itemIdentifier.uuidString)
+        for itemIdentifier in itemIdentifiers {
+            values.removeValue(forKey: itemIdentifier.uuidString)
+        }
         saveAll(values, defaults: defaults)
     }
 
@@ -976,6 +992,7 @@ extension ClipboardItem {
             utiType: utiType,
             rawData: rawData,
             imageData: imageData,
+            thumbnailData: thumbnailData,
             representations: representationPayloads
         )
         byteCount = payload.byteCount
@@ -1016,7 +1033,8 @@ extension ClipboardItem {
             plainText: plainText,
             utiType: utiType,
             rawData: rawData,
-            imageData: imageData
+            imageData: imageData,
+            thumbnailData: thumbnailData
         )
         item.byteCount = payload.byteCount
         item.contentHash = ClipboardContentHasher.hash(payload)

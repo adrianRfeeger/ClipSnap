@@ -118,6 +118,7 @@ enum ClipboardSettingKey {
     static let appleIntelligenceReviewsSensitiveItems = "appleIntelligenceReviewsSensitiveItems"
     static let appleIntelligenceSyncsAcceptedMetadata = "appleIntelligenceSyncsAcceptedMetadata"
     static let generatedClipboardMetadata = "generatedClipboardMetadata"
+    static let pendingLocalFolderSyncDeletes = "pendingLocalFolderSyncDeletes"
 }
 
 struct ClipboardSettings {

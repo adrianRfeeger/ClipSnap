@@ -31,7 +31,7 @@ ClipSnap is a native macOS clipboard and capture manager built with SwiftUI, App
 
 ## Requirements
 
-- macOS
+- macOS 26 or later
 - Xcode with the macOS SDK required by the project deployment target
 
 ClipSnap does not require an Apple Developer Program membership for local clipboard history, capture, OCR, annotation, or local folder sync.

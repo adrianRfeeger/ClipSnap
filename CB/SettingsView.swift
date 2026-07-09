@@ -1192,6 +1192,9 @@ struct SettingsView: View {
     }
 
     private func clearHistory() {
+        let deletionSnapshot = ClipboardDeletionCoordinator.snapshot(
+            Array(clipboardItems)
+        )
         let request = NSFetchRequest<NSFetchRequestResult>(entityName: "ClipboardItem")
         let deleteRequest = NSBatchDeleteRequest(fetchRequest: request)
         deleteRequest.resultType = .resultTypeObjectIDs
@@ -1203,7 +1206,10 @@ struct SettingsView: View {
                 fromRemoteContextSave: [NSDeletedObjectsKey: objectIDs],
                 into: [viewContext]
             )
-            ClipboardSpotlightIndexer.shared.deleteAll()
+            ClipboardDeletionCoordinator.finalize(deletionSnapshot)
+            if deletionSnapshot.isEmpty {
+                ClipboardSpotlightIndexer.shared.deleteAll()
+            }
             lastCleanupDate = Date().timeIntervalSince1970
             lastCleanupDeletedCount = objectIDs.count
         } catch {
@@ -1276,13 +1282,12 @@ struct SettingsView: View {
             return
         }
 
-        ClipboardSpotlightIndexer.shared.deleteIdentifiers(
-            targets.compactMap { $0.id?.uuidString }
-        )
+        let deletionSnapshot = ClipboardDeletionCoordinator.snapshot(targets)
         targets.forEach(viewContext.delete)
 
         do {
             try viewContext.save()
+            ClipboardDeletionCoordinator.finalize(deletionSnapshot)
             lastCleanupDate = Date().timeIntervalSince1970
             lastCleanupDeletedCount = targets.count
         } catch {

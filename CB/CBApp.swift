@@ -79,6 +79,7 @@ struct ClipSnapApp: App {
                     }
                 }
         }
+        .defaultSize(width: 1_100, height: 700)
         .commands {
             CommandMenu("Capture") {
                 Button("Capture Text from Region") {

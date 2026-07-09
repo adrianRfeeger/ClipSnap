@@ -193,7 +193,6 @@ struct QuickClipboardPicker: View {
             .padding(.vertical, 9)
         }
         .frame(width: 520, height: 430)
-        .accessibilityIdentifier("quickClipboard.main")
         .onAppear {
             selectedIndex = 0
             searchIsFocused = true

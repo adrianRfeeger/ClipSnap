@@ -32,11 +32,15 @@ struct HistoryCleanupService {
                 return
             }
 
-            for item in items where item.id.map(identifiers.contains) == true {
+            let itemsToDelete = items.filter {
+                $0.id.map(identifiers.contains) == true
+            }
+            let deletionSnapshot = ClipboardDeletionCoordinator.snapshot(itemsToDelete)
+            for item in itemsToDelete {
                 context.delete(item)
             }
             try context.save()
-            ClipboardSpotlightIndexer.shared.deleteIdentifiers(identifiers.map(\.uuidString))
+            ClipboardDeletionCoordinator.finalize(deletionSnapshot)
             logger.info("Removed \(identifiers.count, privacy: .public) clipboard history items")
         } catch {
             context.rollback()

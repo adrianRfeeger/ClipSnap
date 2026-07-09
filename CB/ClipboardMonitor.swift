@@ -434,7 +434,11 @@ final class ClipboardMonitor: ObservableObject {
             return
         }
 
-        captureRepresentations(from: pasteboard, for: capturedItem)
+        captureRepresentations(
+            from: pasteboard,
+            for: capturedItem,
+            settings: settings
+        )
         capturedItem.sourceApp = sourceApp
         capturedItem.sourceBundleIdentifier = sourceBundleIdentifier
         applyAutomation(to: capturedItem)
@@ -847,30 +851,23 @@ final class ClipboardMonitor: ObservableObject {
         _ pasteboardType: NSPasteboard.PasteboardType,
         settings: ClipboardSettings
     ) -> Bool {
-        guard settings.ignoresInternalPasteboardTypes else {
-            return false
-        }
-
-        let identifier = pasteboardType.rawValue
-        return settings.ignoredPasteboardTypes.contains { ignoredIdentifier in
-            if ignoredIdentifier.hasSuffix("*") {
-                let prefix = String(ignoredIdentifier.dropLast())
-                return identifier.hasPrefix(prefix)
-            }
-
-            return identifier == ignoredIdentifier
-        }
+        !ClipboardRepresentationCapturePolicy.shouldCapture(
+            pasteboardType.rawValue,
+            settings: settings
+        )
     }
 
-    private func captureRepresentations(from pasteboard: NSPasteboard, for clipboardItem: ClipboardItem) {
-        let protectedTypes = Set([
-            "org.nspasteboard.TransientType",
-            "org.nspasteboard.ConcealedType"
-        ])
-
+    private func captureRepresentations(
+        from pasteboard: NSPasteboard,
+        for clipboardItem: ClipboardItem,
+        settings: ClipboardSettings
+    ) {
         for (itemIndex, pasteboardItem) in (pasteboard.pasteboardItems ?? []).enumerated() {
             for (order, pasteboardType) in pasteboardItem.types.enumerated() {
-                guard !protectedTypes.contains(pasteboardType.rawValue) else {
+                guard ClipboardRepresentationCapturePolicy.shouldCapture(
+                    pasteboardType.rawValue,
+                    settings: settings
+                ) else {
                     continue
                 }
 
@@ -1095,6 +1092,32 @@ private struct HTMLClipboardContent {
     let itemType: String
     let plainText: String?
     let previewText: String
+}
+
+enum ClipboardRepresentationCapturePolicy {
+    private static let protectedTypes = Set([
+        "org.nspasteboard.TransientType",
+        "org.nspasteboard.ConcealedType"
+    ])
+
+    static func shouldCapture(
+        _ identifier: String,
+        settings: ClipboardSettings
+    ) -> Bool {
+        guard !protectedTypes.contains(identifier) else {
+            return false
+        }
+        guard settings.ignoresInternalPasteboardTypes else {
+            return true
+        }
+
+        return !settings.ignoredPasteboardTypes.contains { ignoredIdentifier in
+            if ignoredIdentifier.hasSuffix("*") {
+                return identifier.hasPrefix(ignoredIdentifier.dropLast())
+            }
+            return identifier == ignoredIdentifier
+        }
+    }
 }
 
 private extension NSImage {

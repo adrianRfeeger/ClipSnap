@@ -45,7 +45,7 @@ struct ArchiveClipboardPreview: View {
     }
 }
 
-struct ZIPArchiveEntry: Identifiable, Equatable {
+nonisolated struct ZIPArchiveEntry: Identifiable, Equatable, Sendable {
     let name: String
     let uncompressedSize: UInt32
 
@@ -58,7 +58,7 @@ struct ZIPArchiveEntry: Identifiable, Equatable {
     }
 }
 
-enum ZIPArchiveParser {
+nonisolated enum ZIPArchiveParser {
     static func entries(in data: Data) -> [ZIPArchiveEntry] {
         let bytes = [UInt8](data)
         guard bytes.count >= 22 else {

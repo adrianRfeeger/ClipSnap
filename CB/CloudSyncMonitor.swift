@@ -687,8 +687,13 @@ enum ClipboardLocalFolderSyncService {
     @MainActor
     static func exportItems(
         in context: NSManagedObjectContext,
-        provider: ClipboardLocalFolderSyncProvider
+        provider: ClipboardLocalFolderSyncProvider,
+        defaults: UserDefaults = .standard
     ) async throws -> ClipboardLocalFolderSyncSummary {
+        try await ClipboardLocalFolderDeletionQueue.flush(
+            using: provider,
+            defaults: defaults
+        )
         let items = try fetchClipboardItems(in: context)
         let exportableItems = items.filter {
             !$0.isLocalOnly && !$0.isSensitive
@@ -704,20 +709,38 @@ enum ClipboardLocalFolderSyncService {
     @MainActor
     static func importItems(
         in context: NSManagedObjectContext,
-        provider: ClipboardLocalFolderSyncProvider
+        provider: ClipboardLocalFolderSyncProvider,
+        defaults: UserDefaults = .standard
     ) async throws -> ClipboardLocalFolderSyncSummary {
+        try await ClipboardLocalFolderDeletionQueue.flush(
+            using: provider,
+            defaults: defaults
+        )
         let items = try fetchClipboardItems(in: context)
         let deleteMarkers = try await provider.downloadDeleteMarkers(since: nil)
         let packages = try await provider.downloadPackages(since: nil)
+        let newestDeleteMarkers = deleteMarkers.reduce(
+            into: [UUID: ClipboardSyncDeleteMarker]()
+        ) { result, marker in
+            guard marker.updatedAt > (result[marker.itemIdentifier]?.updatedAt ?? .distantPast) else {
+                return
+            }
+            result[marker.itemIdentifier] = marker
+        }
         var existingItems = Dictionary(
             uniqueKeysWithValues: items.compactMap { item in
                 item.id.map { ($0, item) }
             }
         )
         var changedItems: [ClipboardItem] = []
+        var deletedItemSnapshots: [ClipboardDeletionSnapshot] = []
         var summary = ClipboardLocalFolderSyncSummary()
 
-        for marker in deleteMarkers {
+        for marker in newestDeleteMarkers.values {
+            if let existingItem = existingItems[marker.itemIdentifier],
+               existingItem.isLocalOnly || existingItem.isSensitive {
+                continue
+            }
             let resolution = ClipboardSyncConflictResolver.resolveDeleteMarker(
                 marker,
                 existingItem: existingItems[marker.itemIdentifier]
@@ -725,8 +748,8 @@ enum ClipboardLocalFolderSyncService {
             switch resolution {
             case .deleteLocal:
                 if let item = existingItems[marker.itemIdentifier] {
-                    ClipboardSpotlightIndexer.shared.deleteIdentifiers(
-                        item.id.map { [$0.uuidString] } ?? []
+                    deletedItemSnapshots.append(
+                        ClipboardDeletionCoordinator.snapshot([item])
                     )
                     context.delete(item)
                     existingItems.removeValue(forKey: marker.itemIdentifier)
@@ -740,6 +763,14 @@ enum ClipboardLocalFolderSyncService {
         }
 
         for package in packages {
+            if let marker = newestDeleteMarkers[package.itemIdentifier],
+               marker.updatedAt >= package.item.updatedAt {
+                continue
+            }
+            if let existingItem = existingItems[package.itemIdentifier],
+               existingItem.isLocalOnly || existingItem.isSensitive {
+                continue
+            }
             guard existingItems[package.itemIdentifier]?.isDeleted != true else {
                 continue
             }
@@ -766,6 +797,13 @@ enum ClipboardLocalFolderSyncService {
         }
 
         try context.save()
+        deletedItemSnapshots.forEach {
+            ClipboardDeletionCoordinator.finalize(
+                $0,
+                enqueueLocalFolderTombstones: false,
+                defaults: defaults
+            )
+        }
         changedItems.forEach(ClipboardSpotlightIndexer.shared.indexItem)
         return summary
     }
@@ -773,10 +811,19 @@ enum ClipboardLocalFolderSyncService {
     @MainActor
     static func sync(
         in context: NSManagedObjectContext,
-        provider: ClipboardLocalFolderSyncProvider
+        provider: ClipboardLocalFolderSyncProvider,
+        defaults: UserDefaults = .standard
     ) async throws -> ClipboardLocalFolderSyncSummary {
-        var summary = try await importItems(in: context, provider: provider)
-        let exportSummary = try await exportItems(in: context, provider: provider)
+        var summary = try await importItems(
+            in: context,
+            provider: provider,
+            defaults: defaults
+        )
+        let exportSummary = try await exportItems(
+            in: context,
+            provider: provider,
+            defaults: defaults
+        )
         summary.exportedCount = exportSummary.exportedCount
         return summary
     }

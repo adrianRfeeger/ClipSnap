@@ -27,11 +27,13 @@ final class CBUITests: XCTestCase {
         let app = makeApplication()
         app.launch()
 
-        XCTAssertTrue(app.otherElements["clipboard.main"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["UI Test Note"].exists)
-        XCTAssertTrue(app.staticTexts["UI Test URL"].exists)
+        XCTAssertTrue(waitForMainWindow(in: app))
+        let noteItem = historyItem(named: "UI Test Note", in: app)
+        let urlItem = historyItem(named: "UI Test URL", in: app)
+        XCTAssertTrue(noteItem.waitForExistence(timeout: 2))
+        XCTAssertTrue(urlItem.waitForExistence(timeout: 2))
 
-        app.staticTexts["UI Test Note"].click()
+        noteItem.click()
         XCTAssertTrue(app.buttons["clipboard.detail.copy"].waitForExistence(timeout: 2))
 
         let searchField = app.searchFields.firstMatch
@@ -39,8 +41,8 @@ final class CBUITests: XCTestCase {
         searchField.click()
         searchField.typeText("type:url")
 
-        XCTAssertTrue(app.staticTexts["UI Test URL"].waitForExistence(timeout: 2))
-        XCTAssertFalse(app.staticTexts["UI Test Note"].exists)
+        XCTAssertTrue(urlItem.waitForExistence(timeout: 2))
+        XCTAssertFalse(noteItem.exists)
     }
 
     @MainActor
@@ -51,10 +53,14 @@ final class CBUITests: XCTestCase {
         app.typeKey("v", modifierFlags: [.command, .shift])
 
         XCTAssertTrue(
-            app.otherElements["quickClipboard.main"].waitForExistence(timeout: 3)
+            app.windows["quick-clipboard-picker"].waitForExistence(timeout: 3)
         )
-        XCTAssertTrue(app.textFields["quickClipboard.search"].exists)
-        XCTAssertTrue(app.staticTexts["UI Test Note"].exists)
+        XCTAssertTrue(
+            app.textFields["quickClipboard.search"].waitForExistence(timeout: 2)
+        )
+        XCTAssertTrue(
+            historyItem(named: "UI Test Note", in: app).waitForExistence(timeout: 2)
+        )
     }
 
     @MainActor
@@ -62,18 +68,24 @@ final class CBUITests: XCTestCase {
         let app = makeApplication()
         app.launch()
 
-        XCTAssertTrue(app.otherElements["clipboard.main"].waitForExistence(timeout: 5))
+        XCTAssertTrue(waitForMainWindow(in: app))
 
-        let savedFiltersMenu = app.buttons["clipboard.savedFilters.menu"]
+        let overflowMenu = app.popUpButtons["more toolbar items"]
+        XCTAssertTrue(overflowMenu.waitForExistence(timeout: 2))
+        overflowMenu.click()
+
+        let savedFiltersMenu = app.menuItems["Saved Filters"]
         XCTAssertTrue(savedFiltersMenu.waitForExistence(timeout: 2))
         savedFiltersMenu.click()
 
-        let favoritesItem = app.menuItems["Favorites"]
+        let favoritesItem = app.menuItems
+            .matching(identifier: "Favorites")
+            .element(boundBy: 1)
         XCTAssertTrue(favoritesItem.waitForExistence(timeout: 2))
         favoritesItem.click()
 
-        XCTAssertTrue(app.staticTexts["UI Test URL"].waitForExistence(timeout: 2))
-        XCTAssertFalse(app.staticTexts["UI Test Note"].exists)
+        XCTAssertTrue(historyItem(named: "UI Test URL", in: app).waitForExistence(timeout: 2))
+        XCTAssertFalse(historyItem(named: "UI Test Note", in: app).exists)
     }
 
     @MainActor
@@ -81,9 +93,9 @@ final class CBUITests: XCTestCase {
         let app = makeApplication()
         app.launch()
 
-        XCTAssertTrue(app.otherElements["clipboard.main"].waitForExistence(timeout: 5))
+        XCTAssertTrue(waitForMainWindow(in: app))
 
-        let captureMenu = app.buttons["clipboard.capture.menu"]
+        let captureMenu = app.menuBars.menuBarItems["Capture"]
         XCTAssertTrue(captureMenu.waitForExistence(timeout: 2))
         captureMenu.click()
 
@@ -97,20 +109,26 @@ final class CBUITests: XCTestCase {
         let app = makeApplication()
         app.launch()
 
-        XCTAssertTrue(app.otherElements["clipboard.main"].waitForExistence(timeout: 5))
-        app.typeKey(",", modifierFlags: .command)
+        XCTAssertTrue(waitForMainWindow(in: app))
+        app.menuBars.menuBarItems["ClipSnap"].click()
+        app.menuItems["Settings…"].click()
 
+        let generalTab = app.buttons["General"]
+        XCTAssertTrue(generalTab.waitForExistence(timeout: 3))
+        generalTab.click()
         XCTAssertTrue(app.buttons["settings.setup.open"].waitForExistence(timeout: 3))
         XCTAssertTrue(app.buttons["settings.diagnostics.copy"].exists)
 
         app.buttons["settings.setup.open"].click()
-        XCTAssertTrue(app.otherElements["setup.main"].waitForExistence(timeout: 2))
+        XCTAssertTrue(app.buttons["Done"].waitForExistence(timeout: 2))
 
         app.buttons["Done"].click()
         XCTAssertTrue(app.buttons["settings.setup.open"].waitForExistence(timeout: 2))
 
-        app.buttons["Storage"].click()
-        XCTAssertTrue(app.buttons["settings.health.cleanup.menu"].waitForExistence(timeout: 2))
+        app.buttons["History"].click()
+        XCTAssertTrue(
+            app.menuButtons["settings.health.cleanup.menu"].waitForExistence(timeout: 2)
+        )
     }
 
     @MainActor
@@ -126,10 +144,10 @@ final class CBUITests: XCTestCase {
         measure(metrics: [XCTClockMetric()]) {
             let app = makeApplication(arguments: ["--ui-testing-large-history"])
             app.launch()
-            XCTAssertTrue(app.otherElements["clipboard.main"].waitForExistence(timeout: 5))
+            XCTAssertTrue(waitForMainWindow(in: app))
 
             app.typeKey("v", modifierFlags: [.command, .shift])
-            XCTAssertTrue(app.otherElements["quickClipboard.main"].waitForExistence(timeout: 3))
+            XCTAssertTrue(app.windows["quick-clipboard-picker"].waitForExistence(timeout: 3))
 
             app.typeKey(.escape, modifierFlags: [])
             app.terminate()
@@ -140,5 +158,24 @@ final class CBUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["--ui-testing"] + arguments
         return app
+    }
+
+    private func waitForMainWindow(
+        in app: XCUIApplication,
+        timeout: TimeInterval = 5
+    ) -> Bool {
+        app.windows
+            .matching(NSPredicate(format: "identifier BEGINSWITH %@", "clipboard-AppWindow"))
+            .firstMatch
+            .waitForExistence(timeout: timeout)
+    }
+
+    private func historyItem(
+        named name: String,
+        in app: XCUIApplication
+    ) -> XCUIElement {
+        app.staticTexts
+            .matching(NSPredicate(format: "value BEGINSWITH %@", name))
+            .firstMatch
     }
 }

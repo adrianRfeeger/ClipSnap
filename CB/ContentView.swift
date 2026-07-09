@@ -494,6 +494,16 @@ struct ContentView: View {
                 selectedItemIdentifiers = [identifier]
             }
         }
+        .onAppear {
+            guard selectedItemIdentifiers.isEmpty,
+                  let selectedItemIdentifier,
+                  items.contains(where: {
+                      $0.selectionIdentifier == selectedItemIdentifier
+                  }) else {
+                return
+            }
+            selectedItemIdentifiers = [selectedItemIdentifier]
+        }
         .onChange(of: selectedItemIdentifiers) { _, identifiers in
             selectedItemIdentifier = identifiers.count == 1 ? identifiers.first : nil
         }
@@ -608,12 +618,7 @@ struct ContentView: View {
     }
 
     private func delete(_ item: ClipboardItem) {
-        selectedItemIdentifiers.remove(item.selectionIdentifier)
-        if let identifier = item.id?.uuidString {
-            ClipboardSpotlightIndexer.shared.deleteIdentifiers([identifier])
-        }
-        viewContext.delete(item)
-        saveContext()
+        delete([item])
     }
 
     private func ignorePrimaryPasteboardType(for item: ClipboardItem) {
@@ -646,14 +651,14 @@ struct ContentView: View {
             return
         }
 
+        let deletionSnapshot = ClipboardDeletionCoordinator.snapshot(itemsToDelete)
         selectedItemIdentifiers.subtract(
             itemsToDelete.map(\.selectionIdentifier)
         )
-        ClipboardSpotlightIndexer.shared.deleteIdentifiers(
-            itemsToDelete.compactMap { $0.id?.uuidString }
-        )
         itemsToDelete.forEach(viewContext.delete)
-        saveContext()
+        if saveContext() {
+            ClipboardDeletionCoordinator.finalize(deletionSnapshot)
+        }
     }
 
     private func contextMenuDeleteTitle(for item: ClipboardItem) -> String {
@@ -814,6 +819,7 @@ struct ContentView: View {
     }
 
     private func move(_ item: ClipboardItem, localOnly: Bool) {
+        let itemIdentifier = item.id
         guard let copy = PersistenceStoreRouting.copy(
             item,
             localOnly: localOnly,
@@ -823,7 +829,12 @@ struct ContentView: View {
         }
         let identifier = copy.selectionIdentifier
         viewContext.delete(item)
-        saveContext()
+        guard saveContext() else {
+            return
+        }
+        if localOnly, let itemIdentifier {
+            ClipboardLocalFolderDeletionQueue.enqueue([itemIdentifier])
+        }
         selectedItemIdentifiers = [identifier]
     }
 
@@ -845,15 +856,18 @@ struct ContentView: View {
         selectedItemIdentifiers = []
     }
 
-    private func saveContext() {
+    @discardableResult
+    private func saveContext() -> Bool {
         let changedItems = (viewContext.insertedObjects.union(viewContext.updatedObjects))
             .compactMap { $0 as? ClipboardItem }
         do {
             try viewContext.save()
             changedItems.forEach(ClipboardSpotlightIndexer.shared.indexItem)
+            return true
         } catch {
             viewContext.rollback()
             NSLog("Failed to save clipboard changes: \(error.localizedDescription)")
+            return false
         }
     }
 }

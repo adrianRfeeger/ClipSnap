@@ -20,6 +20,7 @@ struct ClipboardPayload: Sendable {
     let utiType: String?
     let rawData: Data?
     let imageData: Data?
+    let thumbnailData: Data?
     let representations: [ClipboardRepresentationPayload]
 
     init(
@@ -28,6 +29,7 @@ struct ClipboardPayload: Sendable {
         utiType: String?,
         rawData: Data?,
         imageData: Data?,
+        thumbnailData: Data? = nil,
         representations: [ClipboardRepresentationPayload] = []
     ) {
         self.type = type
@@ -35,19 +37,18 @@ struct ClipboardPayload: Sendable {
         self.utiType = utiType
         self.rawData = rawData
         self.imageData = imageData
+        self.thumbnailData = thumbnailData
         self.representations = representations
     }
 
     var byteCount: Int64 {
-        if !representations.isEmpty {
-            return representations.reduce(0) { $0 + $1.byteCount }
-        }
-
         return Int64(
             (plainText?.utf8.count ?? 0)
                 + (rawData?.count ?? 0)
                 + (imageData?.count ?? 0)
+                + (thumbnailData?.count ?? 0)
         )
+            + representations.reduce(0) { $0 + $1.byteCount }
     }
 }
 

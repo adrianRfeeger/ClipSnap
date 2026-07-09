@@ -124,6 +124,7 @@ struct ClipboardSearchQuery {
     }
 
     func matches(_ item: ClipboardItem) -> Bool {
+        let generatedMetadata = item.generatedMetadata
         if let source,
            !(item.sourceApp ?? "").localizedCaseInsensitiveContains(source) {
             return false
@@ -136,13 +137,22 @@ struct ClipboardSearchQuery {
            }) {
             return false
         }
-        if let tag,
-           !item.tags.contains(where: { $0.localizedCaseInsensitiveContains(tag) }) {
-            return false
+        if let tag {
+            let tags = item.tags + (generatedMetadata?.suggestedTags ?? [])
+            if !tags.contains(where: { $0.localizedCaseInsensitiveContains(tag) }) {
+                return false
+            }
         }
-        if let collection,
-           !(item.collectionName ?? "").localizedCaseInsensitiveContains(collection) {
-            return false
+        if let collection {
+            let collections = [
+                item.collectionName,
+                generatedMetadata?.suggestedCollection
+            ].compactMap { $0 }
+            if !collections.contains(where: {
+                $0.localizedCaseInsensitiveContains(collection)
+            }) {
+                return false
+            }
         }
         if let isFavorite, item.isFavorite != isFavorite {
             return false
@@ -162,7 +172,6 @@ struct ClipboardSearchQuery {
                 return false
             }
         }
-        let generatedMetadata = item.generatedMetadata
         if let hasGeneratedMetadata,
            (generatedMetadata?.hasSuggestions == true) != hasGeneratedMetadata {
             return false
