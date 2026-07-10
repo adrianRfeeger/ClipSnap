@@ -11,12 +11,14 @@ struct PDFClipboardPreview: NSViewRepresentable {
         view.displayMode = .singlePageContinuous
         view.displayDirection = .vertical
         view.displaysPageBreaks = true
+        view.backgroundColor = .clear
         return view
     }
 
     func updateNSView(_ view: PDFView, context: Context) {
         if view.document?.dataRepresentation() != data {
             view.document = PDFDocument(data: data)
+            view.autoScales = true
         }
     }
 }

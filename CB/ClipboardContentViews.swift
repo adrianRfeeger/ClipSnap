@@ -1,6 +1,7 @@
 import AppKit
 import AVFoundation
 import AVKit
+import PDFKit
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -42,8 +43,11 @@ struct ClipboardItemPreview: View {
         case ClipboardItemType.html:
             htmlPreview
         case ClipboardItemType.pdf:
-            if let rawData = item.rawData {
+            if let rawData = pdfData {
                 PDFClipboardPreview(data: rawData)
+                    .frame(minHeight: 260)
+                    .frame(height: pdfPreviewHeight)
+                    .background(.quaternary.opacity(0.12), in: RoundedRectangle(cornerRadius: 6))
             } else {
                 ContentUnavailableView("PDF Unavailable", systemImage: "doc.fill")
             }
@@ -117,6 +121,54 @@ struct ClipboardItemPreview: View {
         }
 
         return nil
+    }
+
+    private var pdfData: Data? {
+        let preferredTypeIdentifiers = Set([
+            UTType.pdf.identifier,
+            NSPasteboard.PasteboardType.pdf.rawValue,
+            "com.adobe.pdf"
+        ])
+
+        if let rawData = item.rawData,
+           validPDFData(rawData) {
+            return rawData
+        }
+
+        return item.sortedRepresentations
+            .filter { representation in
+                guard let identifier = representation.utiIdentifier else {
+                    return false
+                }
+
+                return preferredTypeIdentifiers.contains(identifier)
+            }
+            .compactMap(\.data)
+            .first(where: validPDFData)
+    }
+
+    private var pdfPreviewHeight: CGFloat {
+        guard let data = pdfData,
+              let document = PDFDocument(data: data),
+              let firstPage = document.page(at: 0) else {
+            return 520
+        }
+
+        let pageBounds = firstPage.bounds(for: .mediaBox)
+        guard pageBounds.width > 0, pageBounds.height > 0 else {
+            return 520
+        }
+
+        let aspectRatio = pageBounds.height / pageBounds.width
+        return min(max(620 * aspectRatio, 360), 760)
+    }
+
+    private func validPDFData(_ data: Data) -> Bool {
+        guard let document = PDFDocument(data: data) else {
+            return false
+        }
+
+        return document.pageCount > 0
     }
 
     @ViewBuilder
