@@ -465,19 +465,6 @@ struct ContentView: View {
                     .strokeBorder(.tint, style: StrokeStyle(lineWidth: 3, dash: [8, 5]))
                     .padding(8)
                     .allowsHitTesting(false)
-            } else if screenCaptureService.isCapturing,
-                      !screenCaptureService.isRecording,
-                      !screenCaptureService.isRecordingPaused,
-                      let statusText = screenCaptureService.statusText {
-                VStack(spacing: 10) {
-                    ProgressView()
-                    Text(statusText)
-                    Button("Cancel") {
-                        screenCaptureService.cancelCapture()
-                    }
-                }
-                .padding(18)
-                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
             }
         }
         .onDrop(
