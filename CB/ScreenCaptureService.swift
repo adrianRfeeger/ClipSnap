@@ -26,6 +26,15 @@ enum ScreenCaptureSettingKey {
     static let recordingAudioMode = "screenCaptureRecordingAudioMode"
 }
 
+enum ScreenCaptureImagePostProcessor {
+    nonisolated static func prepare(_ image: CGImage) -> CGImage {
+        // ScreenCaptureKit already returns the requested frame. Pixel-based
+        // banner detection can mistake a normal menu bar or bright desktop for
+        // an overlay and permanently remove valid content.
+        image
+    }
+}
+
 enum ScreenRecordingAudioMode: String, CaseIterable, Identifiable {
     case none
     case system
@@ -266,7 +275,7 @@ final class ScreenCaptureService: NSObject, ObservableObject {
         guard let image = output.sdrImage ?? output.hdrImage else {
             throw ScreenCaptureError.missingImage
         }
-        return image.removingScreenSharingBannerIfPresent()
+        return ScreenCaptureImagePostProcessor.prepare(image)
     }
 
     private func screenCaptureRect(from appKitRect: CGRect) -> CGRect {
@@ -369,7 +378,7 @@ final class ScreenCaptureService: NSObject, ObservableObject {
             }
 
             await finishCapture(
-                image: image.removingScreenSharingBannerIfPresent(),
+                image: ScreenCaptureImagePostProcessor.prepare(image),
                 sourceDescription: sourceDescription(for: filter)
             )
         } catch {
@@ -1107,158 +1116,6 @@ private struct PreparedScreenRecording: Sendable {
             imageData: nil
         ).contentIdentity
         return PreparedScreenRecording(data: data, contentIdentity: identity)
-    }
-}
-
-private extension CGImage {
-    func removingScreenSharingBannerIfPresent() -> CGImage {
-        guard let cropRect = screenSharingBannerCropRect else {
-            return self
-        }
-
-        return cropping(to: cropRect) ?? self
-    }
-
-    private var screenSharingBannerCropRect: CGRect? {
-        let bannerHeight = estimatedScreenSharingBannerHeight
-        guard bannerHeight > 0,
-              height > bannerHeight * 3,
-              width >= 600 else {
-            return nil
-        }
-
-        let sampleHeight = min(bannerHeight, height)
-        guard topBandLooksLikeScreenSharingBanner(height: sampleHeight) else {
-            return nil
-        }
-
-        return CGRect(
-            x: 0,
-            y: sampleHeight,
-            width: width,
-            height: height - sampleHeight
-        )
-    }
-
-    private var estimatedScreenSharingBannerHeight: Int {
-        let scaledEstimate = Int((Double(width) / 1970.0) * 103.0)
-        return min(max(scaledEstimate, 44), min(140, height / 3))
-    }
-
-    private func topBandLooksLikeScreenSharingBanner(height sampleHeight: Int) -> Bool {
-        guard let dataProvider = dataProvider,
-              let data = dataProvider.data,
-              let bytes = CFDataGetBytePtr(data),
-              bitsPerComponent == 8,
-              bitsPerPixel >= 32,
-              bytesPerRow > 0 else {
-            return false
-        }
-
-        let bytesPerPixel = bitsPerPixel / 8
-        let dataLength = CFDataGetLength(data)
-        guard bytesPerPixel >= 3,
-              width <= bytesPerRow / bytesPerPixel,
-              height <= dataLength / bytesPerRow else {
-            return false
-        }
-        let topBrightness = averageBrightness(
-            bytes: bytes,
-            bytesPerPixel: bytesPerPixel,
-            yRange: 0..<sampleHeight
-        )
-        let belowBrightness = averageBrightness(
-            bytes: bytes,
-            bytesPerPixel: bytesPerPixel,
-            yRange: sampleHeight..<min(height, sampleHeight * 2)
-        )
-
-        guard topBrightness > 0.22,
-              topBrightness - belowBrightness > 0.06 else {
-            return false
-        }
-
-        let leftEdgeStrength = brightPixelRatio(
-            bytes: bytes,
-            bytesPerPixel: bytesPerPixel,
-            rect: CGRect(
-                x: 0,
-                y: 0,
-                width: min(width / 3, 420),
-                height: sampleHeight
-            )
-        )
-        let rightButtonStrength = brightPixelRatio(
-            bytes: bytes,
-            bytesPerPixel: bytesPerPixel,
-            rect: CGRect(
-                x: max(0, width - max(width / 5, 300)),
-                y: 0,
-                width: max(width / 5, 300),
-                height: sampleHeight
-            )
-        )
-
-        return leftEdgeStrength > 0.015 && rightButtonStrength > 0.04
-    }
-
-    private func averageBrightness(
-        bytes: UnsafePointer<UInt8>,
-        bytesPerPixel: Int,
-        yRange: Range<Int>
-    ) -> Double {
-        let stepX = max(1, width / 80)
-        let stepY = max(1, max(1, yRange.count) / 8)
-        var total = 0.0
-        var count = 0
-
-        for y in stride(from: yRange.lowerBound, to: yRange.upperBound, by: stepY) {
-            for x in stride(from: 0, to: width, by: stepX) {
-                total += brightness(atX: x, y: y, bytes: bytes, bytesPerPixel: bytesPerPixel)
-                count += 1
-            }
-        }
-
-        return count == 0 ? 0 : total / Double(count)
-    }
-
-    private func brightPixelRatio(
-        bytes: UnsafePointer<UInt8>,
-        bytesPerPixel: Int,
-        rect: CGRect
-    ) -> Double {
-        let minX = max(0, Int(rect.minX))
-        let maxX = min(width, Int(rect.maxX))
-        let minY = max(0, Int(rect.minY))
-        let maxY = min(height, Int(rect.maxY))
-        let stepX = max(1, maxX - minX) / 80
-        let stepY = max(1, maxY - minY) / 8
-        var brightCount = 0
-        var sampleCount = 0
-
-        for y in stride(from: minY, to: maxY, by: max(1, stepY)) {
-            for x in stride(from: minX, to: maxX, by: max(1, stepX)) {
-                if brightness(atX: x, y: y, bytes: bytes, bytesPerPixel: bytesPerPixel) > 0.72 {
-                    brightCount += 1
-                }
-                sampleCount += 1
-            }
-        }
-
-        return sampleCount == 0 ? 0 : Double(brightCount) / Double(sampleCount)
-    }
-
-    private func brightness(
-        atX x: Int,
-        y: Int,
-        bytes: UnsafePointer<UInt8>,
-        bytesPerPixel: Int
-    ) -> Double {
-        let offset = y * bytesPerRow + x * bytesPerPixel
-        let red = Double(bytes[offset])
-        let green = Double(bytes[offset + 1])
-        let blue = Double(bytes[offset + 2])
-        return (0.2126 * red + 0.7152 * green + 0.0722 * blue) / 255.0
     }
 }
 

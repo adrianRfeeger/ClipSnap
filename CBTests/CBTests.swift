@@ -1009,6 +1009,14 @@ struct CBTests {
         #expect(payload.contentIdentity == expectedIdentity)
     }
 
+    @Test func screenshotPostProcessingPreservesTheRequestedFrame() throws {
+        let image = try #require(makeTestImage())
+        let processedImage = ScreenCaptureImagePostProcessor.prepare(image)
+
+        #expect(processedImage.width == image.width)
+        #expect(processedImage.height == image.height)
+    }
+
     @MainActor
     @Test func ocrRegionTextImportStoresOnlyTextAndDeduplicates() throws {
         let persistence = PersistenceController(inMemory: true)
