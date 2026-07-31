@@ -76,6 +76,7 @@ final class ScreenCaptureService: NSObject, ObservableObject {
     private var recordingSession: ScreenRecordingSession?
     private var recordingElapsedBeforeActiveSegment: TimeInterval = 0
     private var activeRecordingStartedAt: Date?
+    private var isRecordingTransitionInProgress = false
 
     var hasScreenRecordingAccess: Bool {
         CGPreflightScreenCaptureAccess()
@@ -478,10 +479,12 @@ final class ScreenCaptureService: NSObject, ObservableObject {
     func pauseRecording() {
         guard let session = recordingSession,
               session.activeSegment != nil,
-              !isRecordingPaused else {
+              !isRecordingPaused,
+              !isRecordingTransitionInProgress else {
             return
         }
 
+        isRecordingTransitionInProgress = true
         captureTask = Task { [weak self] in
             await self?.pauseCurrentRecordingSegment()
         }
@@ -490,20 +493,24 @@ final class ScreenCaptureService: NSObject, ObservableObject {
     func resumeRecording() {
         guard let session = recordingSession,
               session.activeSegment == nil,
-              isRecordingPaused else {
+              isRecordingPaused,
+              !isRecordingTransitionInProgress else {
             return
         }
 
+        isRecordingTransitionInProgress = true
         captureTask = Task { [weak self] in
             await self?.resumeRecording(session: session)
         }
     }
 
     func stopRecording() {
-        guard recordingSession != nil else {
+        guard recordingSession != nil,
+              !isRecordingTransitionInProgress else {
             return
         }
 
+        isRecordingTransitionInProgress = true
         captureTask = Task { [weak self] in
             await self?.finishRecording()
         }
@@ -514,7 +521,11 @@ final class ScreenCaptureService: NSObject, ObservableObject {
             cancelCapture()
             return
         }
+        guard !isRecordingTransitionInProgress else {
+            return
+        }
 
+        isRecordingTransitionInProgress = true
         captureTask = Task { [weak self] in
             await self?.discardRecording()
         }
@@ -566,6 +577,7 @@ final class ScreenCaptureService: NSObject, ObservableObject {
     }
 
     private func pauseCurrentRecordingSegment() async {
+        defer { isRecordingTransitionInProgress = false }
         guard let session = recordingSession else {
             return
         }
@@ -584,6 +596,7 @@ final class ScreenCaptureService: NSObject, ObservableObject {
     }
 
     private func resumeRecording(session: ScreenRecordingSession) async {
+        defer { isRecordingTransitionInProgress = false }
         statusText = "Resuming recording…"
         do {
             session.activeSegment = try await startRecordingSegment(for: session)
@@ -598,6 +611,7 @@ final class ScreenCaptureService: NSObject, ObservableObject {
     }
 
     private func finishRecording() async {
+        defer { isRecordingTransitionInProgress = false }
         guard let session = recordingSession else {
             isCapturing = false
             statusText = nil
@@ -614,7 +628,17 @@ final class ScreenCaptureService: NSObject, ObservableObject {
             try await stopActiveRecordingSegment(for: session)
 
             let outputURL = try await finalizedRecordingURL(for: session)
-            let data = try Data(contentsOf: outputURL)
+            let maximumImportBytes = maximumRecordingImportBytes()
+            let recordingUTI = session.utiIdentifier
+            let preparedRecording = try await Task.detached(priority: .userInitiated) {
+                try PreparedScreenRecording.load(
+                    from: outputURL,
+                    utiType: recordingUTI,
+                    maximumBytes: maximumImportBytes
+                )
+            }.value
+            try Task.checkCancellation()
+            let data = preparedRecording.data
             guard !data.isEmpty else {
                 throw ScreenCaptureError.emptyRecording
             }
@@ -622,7 +646,8 @@ final class ScreenCaptureService: NSObject, ObservableObject {
             lastCapturedItemIdentifier = clipboardMonitor.importScreenRecording(
                 data,
                 sourceDescription: session.sourceDescription,
-                utiType: session.utiIdentifier
+                utiType: session.utiIdentifier,
+                contentIdentity: preparedRecording.contentIdentity
             )
             cleanUpRecordingFiles(for: session, keeping: outputURL)
             try? FileManager.default.removeItem(at: outputURL)
@@ -636,6 +661,7 @@ final class ScreenCaptureService: NSObject, ObservableObject {
     }
 
     private func discardRecording() async {
+        defer { isRecordingTransitionInProgress = false }
         guard let session = recordingSession else {
             isCapturing = false
             isRecording = false
@@ -820,6 +846,11 @@ final class ScreenCaptureService: NSObject, ObservableObject {
         }
     }
 
+    private func maximumRecordingImportBytes() -> Int64 {
+        let configuredBytes = Int64(ClipboardSettings.load().maximumStorageMegabytes) * 1_024 * 1_024
+        return min(configuredBytes, 512 * 1_024 * 1_024)
+    }
+
     private func sourceDescription(for filter: SCContentFilter) -> String {
         switch filter.style {
         case .display:
@@ -847,8 +878,20 @@ final class ScreenCaptureService: NSObject, ObservableObject {
     }
 
     private func finishCapture(image: CGImage, sourceDescription: String) async {
+        statusText = "Saving capture…"
+        let preparedCapture = await Task.detached(priority: .userInitiated) {
+            ScreenCaptureImageEncoder.encode(image)
+        }.value
+        guard !Task.isCancelled else {
+            return
+        }
+        guard let preparedCapture else {
+            failCapture(ScreenCaptureError.imageEncodingFailed)
+            return
+        }
+
         let capturedIdentifier = clipboardMonitor.importScreenCapture(
-            image,
+            preparedCapture,
             sourceDescription: sourceDescription,
             copyToPasteboard: UserDefaults.standard.bool(forKey: ScreenCaptureSettingKey.copiesAfterCapture)
         )
@@ -883,6 +926,7 @@ final class ScreenCaptureService: NSObject, ObservableObject {
         isWaitingForDelayedCapture = false
         statusText = nil
         picker.isActive = false
+        captureTask = nil
     }
 
     private func failCapture(_ error: Error) {
@@ -901,7 +945,9 @@ final class ScreenCaptureService: NSObject, ObservableObject {
         isWaitingForDelayedCapture = false
         statusText = nil
         resetRecordingTimer()
+        isRecordingTransitionInProgress = false
         picker.isActive = false
+        captureTask = nil
     }
 
     func cancelCapture() {
@@ -922,6 +968,7 @@ final class ScreenCaptureService: NSObject, ObservableObject {
         isCapturing = false
         statusText = nil
         resetRecordingTimer()
+        isRecordingTransitionInProgress = false
     }
 
     func openScreenRecordingSettings() {
@@ -967,56 +1014,121 @@ extension ScreenCaptureService: SCContentSharingPickerObserver {
         for stream: SCStream?
     ) {
         Task { @MainActor [weak self] in
-            switch self?.pickerPurpose {
+            guard let self else {
+                return
+            }
+            switch self.pickerPurpose {
             case .recording:
-                self?.pickerPurpose = nil
-                await self?.startRecording(filter: filter)
-            case .capture, .none:
-                let delaySeconds = self?.pickerDelaySeconds ?? 0
-                self?.pickerPurpose = nil
-                self?.pickerDelaySeconds = 0
-                await self?.capture(filter: filter, delaySeconds: delaySeconds)
+                self.pickerPurpose = nil
+                self.captureTask?.cancel()
+                self.captureTask = Task { [weak self] in
+                    await self?.startRecording(filter: filter)
+                }
+            case .capture:
+                let delaySeconds = self.pickerDelaySeconds
+                self.pickerPurpose = nil
+                self.pickerDelaySeconds = 0
+                self.captureTask?.cancel()
+                self.captureTask = Task { [weak self] in
+                    await self?.capture(filter: filter, delaySeconds: delaySeconds)
+                }
+            case .none:
+                return
             }
         }
     }
 
     nonisolated func contentSharingPicker(_ picker: SCContentSharingPicker, didCancelFor stream: SCStream?) {
         Task { @MainActor [weak self] in
-            self?.isCapturing = false
-            self?.isRecording = false
-            self?.isRecordingPaused = false
-            self?.isWaitingForDelayedCapture = false
-            self?.statusText = nil
-            self?.pickerPurpose = nil
-            self?.pickerDelaySeconds = 0
+            guard let self,
+                  self.pickerPurpose != nil else {
+                return
+            }
+            self.isCapturing = false
+            self.isRecording = false
+            self.isRecordingPaused = false
+            self.isWaitingForDelayedCapture = false
+            self.statusText = nil
+            self.pickerPurpose = nil
+            self.pickerDelaySeconds = 0
+            self.captureTask?.cancel()
+            self.captureTask = nil
             picker.isActive = false
         }
     }
 
     nonisolated func contentSharingPickerStartDidFailWithError(_ error: Error) {
         Task { @MainActor [weak self] in
-            self?.failCapture(error)
+            guard let self,
+                  self.pickerPurpose != nil else {
+                return
+            }
+            self.failCapture(error)
         }
     }
 }
 
 private enum ScreenCaptureError: LocalizedError {
     case missingImage
+    case imageEncodingFailed
     case noRecognizedText
     case emptyRecording
     case exportFailed
+    case recordingTooLarge(actualBytes: Int64, maximumBytes: Int64)
 
     var errorDescription: String? {
         switch self {
         case .missingImage:
             return "The screen capture completed without producing an image."
+        case .imageEncodingFailed:
+            return "The screen capture could not be encoded safely."
         case .noRecognizedText:
             return "No readable text was found in the selected area."
         case .emptyRecording:
             return "The screen recording completed without producing a video."
         case .exportFailed:
             return "The screen recording could not be saved."
+        case let .recordingTooLarge(actualBytes, maximumBytes):
+            let formatter = ByteCountFormatter()
+            formatter.countStyle = .file
+            return "The recording is \(formatter.string(fromByteCount: actualBytes)), which exceeds ClipSnap's safe import limit of \(formatter.string(fromByteCount: maximumBytes))."
         }
+    }
+}
+
+private struct PreparedScreenRecording: Sendable {
+    let data: Data
+    let contentIdentity: ClipboardContentIdentity
+
+    nonisolated static func load(
+        from url: URL,
+        utiType: String,
+        maximumBytes: Int64
+    ) throws -> PreparedScreenRecording {
+        let resourceValues = try url.resourceValues(forKeys: [.fileSizeKey])
+        let fileSize = Int64(resourceValues.fileSize ?? 0)
+        guard fileSize > 0 else {
+            throw ScreenCaptureError.emptyRecording
+        }
+        guard fileSize <= maximumBytes else {
+            throw ScreenCaptureError.recordingTooLarge(
+                actualBytes: fileSize,
+                maximumBytes: maximumBytes
+            )
+        }
+
+        let data = try Data(contentsOf: url, options: .mappedIfSafe)
+        guard !data.isEmpty else {
+            throw ScreenCaptureError.emptyRecording
+        }
+        let identity = ClipboardPayload(
+            type: "video",
+            plainText: nil,
+            utiType: utiType,
+            rawData: data,
+            imageData: nil
+        ).contentIdentity
+        return PreparedScreenRecording(data: data, contentIdentity: identity)
     }
 }
 
@@ -1060,11 +1172,18 @@ private extension CGImage {
               let data = dataProvider.data,
               let bytes = CFDataGetBytePtr(data),
               bitsPerComponent == 8,
-              bitsPerPixel >= 32 else {
+              bitsPerPixel >= 32,
+              bytesPerRow > 0 else {
             return false
         }
 
         let bytesPerPixel = bitsPerPixel / 8
+        let dataLength = CFDataGetLength(data)
+        guard bytesPerPixel >= 3,
+              width <= bytesPerRow / bytesPerPixel,
+              height <= dataLength / bytesPerRow else {
+            return false
+        }
         let topBrightness = averageBrightness(
             bytes: bytes,
             bytesPerPixel: bytesPerPixel,
@@ -1224,10 +1343,17 @@ private final class ScreenRecordingSegment {
 }
 
 private final class ScreenRecordingOutputDelegate: NSObject, SCRecordingOutputDelegate {
-    private(set) var error: Error?
+    private let lock = NSLock()
+    private var storedError: Error?
+
+    var error: Error? {
+        lock.withLock { storedError }
+    }
 
     func recordingOutput(_ recordingOutput: SCRecordingOutput, didFailWithError error: Error) {
-        self.error = error
+        lock.withLock {
+            storedError = error
+        }
     }
 }
 

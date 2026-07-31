@@ -39,6 +39,10 @@ struct CBTests {
 
         #expect(ClipboardContentHasher.hash(first) == ClipboardContentHasher.hash(same))
         #expect(ClipboardContentHasher.hash(first) != ClipboardContentHasher.hash(different))
+        #expect(
+            ClipboardContentHasher.hash(first)
+                == "7915db10bea8f8df6231a574dc4e2cdce54c260e075cdefb22607ed14efdc02f"
+        )
     }
 
     @Test func excludedBundleIdentifiersAreNormalized() {
@@ -189,6 +193,51 @@ struct CBTests {
             ClipboardLocalFolderDeletionQueue.records(defaults: defaults)
                 .map(\.itemIdentifier) == [identifier]
         )
+    }
+
+    @MainActor
+    @Test func bulkDeletionUsesBoundedBackgroundBatches() async throws {
+        let persistence = PersistenceController(inMemory: true)
+        let context = persistence.container.viewContext
+        var items: [ClipboardItem] = []
+
+        for index in 0..<350 {
+            let data = Data(repeating: UInt8(index % 251), count: 4_096)
+            let item = ClipboardItem.make(
+                in: context,
+                type: ClipboardItemType.image,
+                previewText: "Bulk item \(index)",
+                imageData: data,
+                thumbnailData: Data(data.prefix(128)),
+                utiType: "public.png",
+                sourceApp: "Tests"
+            )
+            item.isLocalOnly = true
+            let representation = ClipboardRepresentation(context: context)
+            representation.item = item
+            representation.itemIndex = 0
+            representation.order = 0
+            representation.utiIdentifier = "public.png"
+            representation.data = data
+            representation.byteCount = Int64(data.count)
+            items.append(item)
+        }
+        try context.save()
+
+        let plan = ClipboardDeletionCoordinator.plan(items + Array(items.prefix(10)))
+        let result = await ClipboardDeletionCoordinator.execute(
+            plan,
+            in: context,
+            batchSize: 25
+        )
+        let remainingItems = try context.fetch(ClipboardItem.fetchRequest())
+        let remainingRepresentations = try context.fetch(ClipboardRepresentation.fetchRequest())
+
+        #expect(plan.entries.count == 350)
+        #expect(result.deletedCount == 350)
+        #expect(result.errorDescription == nil)
+        #expect(remainingItems.isEmpty)
+        #expect(remainingRepresentations.isEmpty)
     }
 
     @MainActor
@@ -928,7 +977,36 @@ struct CBTests {
         #expect(item.utiType == "public.png")
         #expect(item.imageData?.isEmpty == false)
         #expect(item.thumbnailData?.isEmpty == false)
+        #expect(item.rawData == nil)
         #expect(item.sourceApp == "Screen Capture")
+    }
+
+    @Test func screenCaptureEncoderPreparesThumbnailAndStableIdentity() throws {
+        let image = try #require(makeTestImage())
+        let payload = try #require(
+            ScreenCaptureImageEncoder.encode(image, thumbnailMaxDimension: 2)
+        )
+        let thumbnailData = try #require(payload.thumbnailData)
+        let thumbnailSource = try #require(
+            CGImageSourceCreateWithData(thumbnailData as CFData, nil)
+        )
+        let properties = try #require(
+            CGImageSourceCopyPropertiesAtIndex(thumbnailSource, 0, nil) as? [CFString: Any]
+        )
+        let width = try #require(properties[kCGImagePropertyPixelWidth] as? Int)
+        let height = try #require(properties[kCGImagePropertyPixelHeight] as? Int)
+        let expectedIdentity = ClipboardPayload(
+            type: ClipboardItemType.image,
+            plainText: nil,
+            utiType: "public.png",
+            rawData: nil,
+            imageData: payload.pngData,
+            thumbnailData: payload.thumbnailData
+        ).contentIdentity
+
+        #expect(width == 2)
+        #expect(height == 2)
+        #expect(payload.contentIdentity == expectedIdentity)
     }
 
     @MainActor

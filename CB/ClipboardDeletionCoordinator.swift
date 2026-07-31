@@ -18,8 +18,117 @@ struct ClipboardDeletionSnapshot: Sendable, Equatable {
     }
 }
 
+struct ClipboardDeletionPlan: Sendable {
+    struct Entry: Sendable {
+        let objectID: NSManagedObjectID
+        let snapshot: ClipboardDeletionSnapshot.Item
+    }
+
+    let entries: [Entry]
+
+    var isEmpty: Bool {
+        entries.isEmpty
+    }
+}
+
+struct ClipboardDeletionResult: Sendable {
+    let deletedCount: Int
+    let errorDescription: String?
+}
+
 @MainActor
 enum ClipboardDeletionCoordinator {
+    static func plan(_ items: [ClipboardItem]) -> ClipboardDeletionPlan {
+        var seenObjectIDs = Set<NSManagedObjectID>()
+        let entries = items.compactMap { item -> ClipboardDeletionPlan.Entry? in
+            guard let identifier = item.id,
+                  !item.objectID.isTemporaryID,
+                  seenObjectIDs.insert(item.objectID).inserted else {
+                return nil
+            }
+
+            return ClipboardDeletionPlan.Entry(
+                objectID: item.objectID,
+                snapshot: ClipboardDeletionSnapshot.Item(
+                    identifier: identifier,
+                    needsLocalFolderTombstone: !item.isLocalOnly && !item.isSensitive
+                )
+            )
+        }
+        return ClipboardDeletionPlan(entries: entries)
+    }
+
+    static func execute(
+        _ plan: ClipboardDeletionPlan,
+        in viewContext: NSManagedObjectContext,
+        batchSize: Int = 100
+    ) async -> ClipboardDeletionResult {
+        guard !plan.isEmpty else {
+            return ClipboardDeletionResult(deletedCount: 0, errorDescription: nil)
+        }
+        guard let coordinator = viewContext.persistentStoreCoordinator else {
+            return ClipboardDeletionResult(
+                deletedCount: 0,
+                errorDescription: "The clipboard database is unavailable."
+            )
+        }
+
+        let backgroundContext = NSManagedObjectContext(concurrencyType: .privateQueueConcurrencyType)
+        backgroundContext.persistentStoreCoordinator = coordinator
+        backgroundContext.mergePolicy = NSMergeByPropertyObjectTrumpMergePolicy
+        backgroundContext.undoManager = nil
+        let chunkSize = max(1, batchSize)
+        let entries = plan.entries
+
+        let outcome = await backgroundContext.perform {
+            var deletedEntries: [ClipboardDeletionPlan.Entry] = []
+            var startIndex = 0
+
+            while startIndex < entries.count {
+                let endIndex = min(startIndex + chunkSize, entries.count)
+                let batch = Array(entries[startIndex..<endIndex])
+                do {
+                    for entry in batch {
+                        let object = try backgroundContext.existingObject(with: entry.objectID)
+                        backgroundContext.delete(object)
+                    }
+                    try backgroundContext.save()
+                    deletedEntries.append(contentsOf: batch)
+                    backgroundContext.reset()
+                    startIndex = endIndex
+                } catch {
+                    backgroundContext.rollback()
+                    return ClipboardDeletionExecutionOutcome(
+                        deletedEntries: deletedEntries,
+                        errorDescription: error.localizedDescription
+                    )
+                }
+            }
+
+            return ClipboardDeletionExecutionOutcome(
+                deletedEntries: deletedEntries,
+                errorDescription: nil
+            )
+        }
+
+        let deletedObjectIDs = outcome.deletedEntries.map(\.objectID)
+        if !deletedObjectIDs.isEmpty {
+            NSManagedObjectContext.mergeChanges(
+                fromRemoteContextSave: [NSDeletedObjectsKey: deletedObjectIDs],
+                into: [viewContext]
+            )
+            let deletedSnapshot = ClipboardDeletionSnapshot(
+                items: outcome.deletedEntries.map(\.snapshot)
+            )
+            finalize(deletedSnapshot)
+        }
+
+        return ClipboardDeletionResult(
+            deletedCount: outcome.deletedEntries.count,
+            errorDescription: outcome.errorDescription
+        )
+    }
+
     static func snapshot(_ items: [ClipboardItem]) -> ClipboardDeletionSnapshot {
         ClipboardDeletionSnapshot(
             items: items.compactMap { item in
@@ -63,6 +172,11 @@ enum ClipboardDeletionCoordinator {
             defaults: defaults
         )
     }
+}
+
+private struct ClipboardDeletionExecutionOutcome: Sendable {
+    let deletedEntries: [ClipboardDeletionPlan.Entry]
+    let errorDescription: String?
 }
 
 struct ClipboardLocalFolderDeletionRecord: Codable, Sendable, Equatable {

@@ -1012,7 +1012,8 @@ extension ClipboardItem {
         rawData: Data? = nil,
         utiType: String? = nil,
         sourceApp: String? = nil,
-        sourceBundleIdentifier: String? = nil
+        sourceBundleIdentifier: String? = nil,
+        contentIdentity: ClipboardContentIdentity? = nil
     ) -> ClipboardItem {
         let item = ClipboardItem(context: context)
         let now = Date()
@@ -1036,8 +1037,9 @@ extension ClipboardItem {
             imageData: imageData,
             thumbnailData: thumbnailData
         )
-        item.byteCount = payload.byteCount
-        item.contentHash = ClipboardContentHasher.hash(payload)
+        let identity = contentIdentity ?? payload.contentIdentity
+        item.byteCount = identity.byteCount
+        item.contentHash = identity.contentHash
         item.isPinned = false
         item.isFavorite = false
         return item

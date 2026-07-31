@@ -9,7 +9,7 @@ struct ClipboardRepresentationPayload: Sendable, Equatable {
     let data: Data?
     let stringValue: String?
 
-    var byteCount: Int64 {
+    nonisolated var byteCount: Int64 {
         Int64((data?.count ?? 0) + (stringValue?.utf8.count ?? 0))
     }
 }
@@ -23,7 +23,7 @@ struct ClipboardPayload: Sendable {
     let thumbnailData: Data?
     let representations: [ClipboardRepresentationPayload]
 
-    init(
+    nonisolated init(
         type: String,
         plainText: String?,
         utiType: String?,
@@ -41,7 +41,7 @@ struct ClipboardPayload: Sendable {
         self.representations = representations
     }
 
-    var byteCount: Int64 {
+    nonisolated var byteCount: Int64 {
         return Int64(
             (plainText?.utf8.count ?? 0)
                 + (rawData?.count ?? 0)
@@ -50,17 +50,29 @@ struct ClipboardPayload: Sendable {
         )
             + representations.reduce(0) { $0 + $1.byteCount }
     }
+
+    nonisolated var contentIdentity: ClipboardContentIdentity {
+        ClipboardContentIdentity(
+            byteCount: byteCount,
+            contentHash: ClipboardContentHasher.hash(self)
+        )
+    }
+}
+
+struct ClipboardContentIdentity: Sendable, Equatable {
+    let byteCount: Int64
+    let contentHash: String
 }
 
 enum ClipboardContentHasher {
-    static func hash(_ payload: ClipboardPayload) -> String {
-        var data = Data()
-        append(payload.type.data(using: .utf8), to: &data)
-        append(payload.utiType?.data(using: .utf8), to: &data)
-        append(payload.plainText?.data(using: .utf8), to: &data)
+    nonisolated static func hash(_ payload: ClipboardPayload) -> String {
+        var hasher = SHA256()
+        append(payload.type.data(using: .utf8), to: &hasher)
+        append(payload.utiType?.data(using: .utf8), to: &hasher)
+        append(payload.plainText?.data(using: .utf8), to: &hasher)
         if payload.representations.isEmpty {
-            append(payload.rawData, to: &data)
-            append(payload.imageData, to: &data)
+            append(payload.rawData, to: &hasher)
+            append(payload.imageData, to: &hasher)
         } else {
             for representation in payload.representations.sorted(by: {
                 if $0.itemIndex != $1.itemIndex {
@@ -71,21 +83,21 @@ enum ClipboardContentHasher {
                 }
                 return $0.utiIdentifier < $1.utiIdentifier
             }) {
-                append(String(representation.itemIndex).data(using: .utf8), to: &data)
-                append(String(representation.order).data(using: .utf8), to: &data)
-                append(representation.utiIdentifier.data(using: .utf8), to: &data)
-                append(representation.data, to: &data)
-                append(representation.stringValue?.data(using: .utf8), to: &data)
+                append(String(representation.itemIndex).data(using: .utf8), to: &hasher)
+                append(String(representation.order).data(using: .utf8), to: &hasher)
+                append(representation.utiIdentifier.data(using: .utf8), to: &hasher)
+                append(representation.data, to: &hasher)
+                append(representation.stringValue?.data(using: .utf8), to: &hasher)
             }
         }
-        return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
-    private static func append(_ value: Data?, to data: inout Data) {
+    nonisolated private static func append(_ value: Data?, to hasher: inout SHA256) {
         var count = UInt64(value?.count ?? 0).bigEndian
-        withUnsafeBytes(of: &count) { data.append(contentsOf: $0) }
+        withUnsafeBytes(of: &count) { hasher.update(bufferPointer: $0) }
         if let value {
-            data.append(value)
+            hasher.update(data: value)
         }
     }
 }

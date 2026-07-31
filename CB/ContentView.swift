@@ -16,7 +16,7 @@ struct ContentView: View {
             NSSortDescriptor(keyPath: \ClipboardItem.isPinned, ascending: false),
             NSSortDescriptor(keyPath: \ClipboardItem.createdAt, ascending: false)
         ],
-        animation: .default
+        animation: nil
     )
     private var items: FetchedResults<ClipboardItem>
 
@@ -32,6 +32,8 @@ struct ContentView: View {
     @State private var imageEditingItem: ClipboardItem?
     @State private var exportErrorMessage: String?
     @State private var generatedMetadataRefreshID = UUID()
+    @State private var isDeletingItems = false
+    @State private var deletionErrorMessage: String?
     @AppStorage(ClipboardSettingKey.hasCompletedSetup)
     private var hasCompletedSetup = false
     @AppStorage(ClipboardSettingKey.savedFilters)
@@ -343,6 +345,7 @@ struct ContentView: View {
                             Button("Delete Selected", role: .destructive) {
                                 delete(selectedItems)
                             }
+                            .disabled(isDeletingItems)
                         } label: {
                             Label(
                                 selectedItemIdentifiers.count == 1
@@ -460,7 +463,16 @@ struct ContentView: View {
         }
         .accessibilityIdentifier("clipboard.main")
         .overlay {
-            if isDropTargeted {
+            if isDeletingItems {
+                ZStack {
+                    Color.black.opacity(0.08)
+                    ProgressView("Deleting selected items…")
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, 14)
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+                }
+                .allowsHitTesting(true)
+            } else if isDropTargeted {
                 RoundedRectangle(cornerRadius: 6)
                     .strokeBorder(.tint, style: StrokeStyle(lineWidth: 3, dash: [8, 5]))
                     .padding(8)
@@ -565,6 +577,21 @@ struct ContentView: View {
         } message: {
             Text(exportErrorMessage ?? "")
         }
+        .alert(
+            "Delete Items",
+            isPresented: Binding(
+                get: { deletionErrorMessage != nil },
+                set: { isPresented in
+                    if !isPresented {
+                        deletionErrorMessage = nil
+                    }
+                }
+            )
+        ) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(deletionErrorMessage ?? "")
+        }
     }
 
     private func toggle(_ keyPath: ReferenceWritableKeyPath<ClipboardItem, Bool>, on item: ClipboardItem) {
@@ -633,18 +660,30 @@ struct ContentView: View {
     }
 
     private func delete(_ items: [ClipboardItem]) {
-        let itemsToDelete = Array(Set(items))
-        guard !itemsToDelete.isEmpty else {
+        guard !isDeletingItems else {
             return
         }
 
-        let deletionSnapshot = ClipboardDeletionCoordinator.snapshot(itemsToDelete)
+        let plan = ClipboardDeletionCoordinator.plan(items)
+        guard !plan.isEmpty else {
+            return
+        }
+
         selectedItemIdentifiers.subtract(
-            itemsToDelete.map(\.selectionIdentifier)
+            items.map(\.selectionIdentifier)
         )
-        itemsToDelete.forEach(viewContext.delete)
-        if saveContext() {
-            ClipboardDeletionCoordinator.finalize(deletionSnapshot)
+        isDeletingItems = true
+        Task {
+            let result = await ClipboardDeletionCoordinator.execute(
+                plan,
+                in: viewContext
+            )
+            isDeletingItems = false
+            if let errorDescription = result.errorDescription {
+                deletionErrorMessage = result.deletedCount > 0
+                    ? "Deleted \(result.deletedCount) items before the operation stopped. \(errorDescription)"
+                    : errorDescription
+            }
         }
     }
 

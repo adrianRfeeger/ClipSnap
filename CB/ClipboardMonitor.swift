@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import CoreData
+import ImageIO
 import OSLog
 import UniformTypeIdentifiers
 
@@ -145,22 +146,35 @@ final class ClipboardMonitor: ObservableObject {
         sourceDescription: String,
         copyToPasteboard: Bool
     ) -> String? {
-        let nsImage = NSImage(cgImage: image, size: .zero)
-        guard let pngData = nsImage.pngData() else {
+        guard let payload = ScreenCaptureImageEncoder.encode(image) else {
             logger.error("Failed to encode screen capture as PNG")
             return nil
         }
 
+        return importScreenCapture(
+            payload,
+            sourceDescription: sourceDescription,
+            copyToPasteboard: copyToPasteboard
+        )
+    }
+
+    @discardableResult
+    func importScreenCapture(
+        _ payload: ScreenCaptureImagePayload,
+        sourceDescription: String,
+        copyToPasteboard: Bool
+    ) -> String? {
+        let pngData = payload.pngData
         let item = ClipboardItem.make(
             in: context,
             type: ClipboardItemType.image,
             previewText: sourceDescription,
             imageData: pngData,
-            thumbnailData: nsImage.thumbnailData(maxDimension: 220),
-            rawData: pngData,
+            thumbnailData: payload.thumbnailData,
             utiType: UTType.png.identifier,
             sourceApp: "Screen Capture",
-            sourceBundleIdentifier: Bundle.main.bundleIdentifier
+            sourceBundleIdentifier: Bundle.main.bundleIdentifier,
+            contentIdentity: payload.contentIdentity
         )
         applyAutomation(to: item)
         item.isSensitive = false
@@ -205,7 +219,8 @@ final class ClipboardMonitor: ObservableObject {
     func importScreenRecording(
         _ data: Data,
         sourceDescription: String,
-        utiType: String = UTType.mpeg4Movie.identifier
+        utiType: String = UTType.mpeg4Movie.identifier,
+        contentIdentity: ClipboardContentIdentity? = nil
     ) -> String? {
         guard !data.isEmpty else {
             logger.error("Failed to import empty screen recording")
@@ -219,7 +234,8 @@ final class ClipboardMonitor: ObservableObject {
             rawData: data,
             utiType: utiType,
             sourceApp: "Screen Recording",
-            sourceBundleIdentifier: Bundle.main.bundleIdentifier
+            sourceBundleIdentifier: Bundle.main.bundleIdentifier,
+            contentIdentity: contentIdentity
         )
         applyAutomation(to: item)
         item.isSensitive = false
@@ -1117,6 +1133,76 @@ enum ClipboardRepresentationCapturePolicy {
             }
             return identifier == ignoredIdentifier
         }
+    }
+}
+
+struct ScreenCaptureImagePayload: Sendable {
+    let pngData: Data
+    let thumbnailData: Data?
+    let contentIdentity: ClipboardContentIdentity
+}
+
+enum ScreenCaptureImageEncoder {
+    nonisolated static func encode(
+        _ image: CGImage,
+        thumbnailMaxDimension: Int = 220
+    ) -> ScreenCaptureImagePayload? {
+        guard let pngData = pngData(from: image) else {
+            return nil
+        }
+
+        let thumbnailData = thumbnailPNGData(
+            from: pngData,
+            maxDimension: thumbnailMaxDimension
+        )
+        let identity = ClipboardPayload(
+            type: "image",
+            plainText: nil,
+            utiType: UTType.png.identifier,
+            rawData: nil,
+            imageData: pngData,
+            thumbnailData: thumbnailData
+        ).contentIdentity
+        return ScreenCaptureImagePayload(
+            pngData: pngData,
+            thumbnailData: thumbnailData,
+            contentIdentity: identity
+        )
+    }
+
+    nonisolated private static func pngData(from image: CGImage) -> Data? {
+        let data = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(
+            data,
+            UTType.png.identifier as CFString,
+            1,
+            nil
+        ) else {
+            return nil
+        }
+
+        CGImageDestinationAddImage(destination, image, nil)
+        guard CGImageDestinationFinalize(destination) else {
+            return nil
+        }
+        return data as Data
+    }
+
+    nonisolated private static func thumbnailPNGData(from pngData: Data, maxDimension: Int) -> Data? {
+        guard maxDimension > 0,
+              let source = CGImageSourceCreateWithData(pngData as CFData, nil),
+              let thumbnail = CGImageSourceCreateThumbnailAtIndex(
+                source,
+                0,
+                [
+                    kCGImageSourceCreateThumbnailFromImageAlways: true,
+                    kCGImageSourceCreateThumbnailWithTransform: true,
+                    kCGImageSourceThumbnailMaxPixelSize: maxDimension
+                ] as CFDictionary
+              ) else {
+            return nil
+        }
+        return self.pngData(from: thumbnail)
     }
 }
 
