@@ -1010,7 +1010,7 @@ struct CBTests {
     }
 
     @MainActor
-    @Test func recognizedTextImportStoresTextAndDeduplicates() throws {
+    @Test func ocrRegionTextImportStoresOnlyTextAndDeduplicates() throws {
         let persistence = PersistenceController(inMemory: true)
         let context = persistence.container.viewContext
         let monitor = ClipboardMonitor(context: context)
@@ -1034,6 +1034,8 @@ struct CBTests {
         #expect(item.plainText == "Recognized screen text")
         #expect(item.utiType == "public.utf8-plain-text")
         #expect(item.sourceApp == "Screen OCR")
+        #expect(item.relatedItemIdentifier == nil)
+        #expect(items.allSatisfy { $0.type == ClipboardItemType.text })
     }
 
     @MainActor

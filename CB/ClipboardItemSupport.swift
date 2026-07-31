@@ -99,6 +99,8 @@ struct ClipboardGeneratedMetadata: Codable, Equatable, Sendable {
 }
 
 enum ClipboardGeneratedMetadataStore {
+    private static let standardCache = ClipboardGeneratedMetadataCache()
+
     static func metadata(
         for itemIdentifier: UUID,
         defaults: UserDefaults = .standard
@@ -142,11 +144,19 @@ enum ClipboardGeneratedMetadataStore {
     }
 
     private static func allMetadata(defaults: UserDefaults) -> [String: ClipboardGeneratedMetadata] {
-        guard let data = defaults.data(forKey: ClipboardSettingKey.generatedClipboardMetadata),
-              let values = try? JSONDecoder().decode([String: ClipboardGeneratedMetadata].self, from: data) else {
-            return [:]
+        if defaults === UserDefaults.standard {
+            return standardCache.values {
+                decode(
+                    defaults.data(
+                        forKey: ClipboardSettingKey.generatedClipboardMetadata
+                    )
+                )
+            }
         }
-        return values
+
+        return decode(
+            defaults.data(forKey: ClipboardSettingKey.generatedClipboardMetadata)
+        )
     }
 
     private static func saveAll(
@@ -157,6 +167,51 @@ enum ClipboardGeneratedMetadataStore {
             return
         }
         defaults.set(data, forKey: ClipboardSettingKey.generatedClipboardMetadata)
+        if defaults === UserDefaults.standard {
+            standardCache.replace(with: values)
+        }
+    }
+
+    private static func decode(
+        _ data: Data?
+    ) -> [String: ClipboardGeneratedMetadata] {
+        guard let data,
+              let values = try? JSONDecoder().decode(
+                [String: ClipboardGeneratedMetadata].self,
+                from: data
+              ) else {
+            return [:]
+        }
+        return values
+    }
+}
+
+private final class ClipboardGeneratedMetadataCache: @unchecked Sendable {
+    private let lock = NSLock()
+    private var hasLoaded = false
+    private var storedValues: [String: ClipboardGeneratedMetadata] = [:]
+
+    func values(
+        loading load: () -> [String: ClipboardGeneratedMetadata]
+    ) -> [String: ClipboardGeneratedMetadata] {
+        lock.lock()
+        defer { lock.unlock() }
+
+        if hasLoaded {
+            return storedValues
+        }
+
+        let decodedValues = load()
+        hasLoaded = true
+        storedValues = decodedValues
+        return decodedValues
+    }
+
+    func replace(with values: [String: ClipboardGeneratedMetadata]) {
+        lock.lock()
+        hasLoaded = true
+        storedValues = values
+        lock.unlock()
     }
 }
 

@@ -293,41 +293,19 @@ final class ScreenCaptureService: NSObject, ObservableObject {
     private func finishOCRRegionCapture(image: CGImage, rect: CGRect) async throws {
         do {
             let text = try await recognizedText(in: image)
-            importOCRRegionCapture(image: image, text: text)
+            importRecognizedText(text, sourceItemIdentifier: nil)
         } catch ScreenCaptureError.noRecognizedText {
             let convertedRect = screenCaptureRect(from: rect).integral
             let originalRect = rect.integral
             if !convertedRect.equalTo(originalRect) {
                 let fallbackImage = try await captureScreenshotImage(in: originalRect)
-                do {
-                    let fallbackText = try await recognizedText(in: fallbackImage)
-                    importOCRRegionCapture(image: fallbackImage, text: fallbackText)
-                    return
-                } catch ScreenCaptureError.noRecognizedText {
-                    importOCRRegionCaptureImage(image)
-                    throw ScreenCaptureError.noRecognizedText
-                }
+                let fallbackText = try await recognizedText(in: fallbackImage)
+                importRecognizedText(fallbackText, sourceItemIdentifier: nil)
+                return
             }
 
-            importOCRRegionCaptureImage(image)
             throw ScreenCaptureError.noRecognizedText
         }
-    }
-
-    private func importOCRRegionCapture(image: CGImage, text: String) {
-        let sourceIdentifier = importOCRRegionCaptureImage(image)
-        importRecognizedText(text, sourceItemIdentifier: sourceIdentifier)
-    }
-
-    @discardableResult
-    private func importOCRRegionCaptureImage(_ image: CGImage) -> String? {
-        let sourceIdentifier = clipboardMonitor.importScreenCapture(
-            image,
-            sourceDescription: "OCR Region Capture",
-            copyToPasteboard: false
-        )
-        lastCapturedItemIdentifier = sourceIdentifier
-        return sourceIdentifier
     }
 
     private func finishOCRCapture(
